@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Longrun: system D-Bus. otbr-agent and avahi both talk to it.
+# --nofork / --nopidfile keep dbus-daemon in the foreground so s6 supervises it.
+set -euo pipefail
+
+exec 2>&1                         # fold stderr into stdout so dbus-log captures it
+mkdir -p /run/dbus
+dbus-uuidgen --ensure            # dbus-daemon --system needs a machine-id
+exec dbus-daemon --system --nofork --nopidfile

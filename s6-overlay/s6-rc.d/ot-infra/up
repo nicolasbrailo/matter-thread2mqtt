@@ -1,0 +1,8 @@
+bash -c "
+  set -euo pipefail
+  echo '[ot-infra] creating ot-infra dummy interface...'
+  ip link show ot-infra >/dev/null 2>&1 || ip link add ot-infra type dummy
+  ip link set ot-infra up
+  ip -6 addr replace fe80::1/64 dev ot-infra
+  echo '[ot-infra] done.'
+"
