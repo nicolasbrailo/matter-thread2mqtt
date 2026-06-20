@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+exec 2>&1                         # fold stderr into stdout so matter-server-log captures it
+exec matter-server \
+    --storage-path /mt2mqtt-run/matter-server-data \
+    --paa-root-cert-dir /src/connectedhomeip/credentials/production/paa-root-certs \
+    --listen-address 127.0.0.1 \
+    --port 5580

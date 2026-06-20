@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Longrun: otbr-agent, the OpenThread border-router agent. Talks to the RCP over
+# the USB serial dongle (/dev/ttyACM0, mapped in via --device), owns
+# io.openthread.BorderRouter.wpan0 on the system bus (OTBR_DBUS=ON), and
+# publishes Thread/SRP records via avahi. -B ot-infra is the backbone interface
+# the ot-infra oneshot creates. -v sends logs to stderr; we fold that into
+# stdout so otbr-agent-log captures it.
+set -euo pipefail
+
+exec 2>&1                         # fold stderr into stdout so otbr-agent-log captures it
+exec /mt2mqtt-bin/otbr-agent -I wpan0 -B ot-infra -v -d 7 \
+    'spinel+hdlc+uart:///dev/ttyACM0?uart-baudrate=460800'

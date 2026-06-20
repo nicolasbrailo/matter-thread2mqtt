@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Longrun: avahi-daemon, the mDNS publisher used for Matter/Thread discovery.
-# -f keeps it in the foreground (no --daemonize) so s6 supervises and restarts it.
+# avahi-daemon runs in the foreground unless given -D/--daemonize, so just omit
+# that and s6 supervises and restarts it. (Note: avahi's -f is --file=FILE, not
+# "foreground" -- don't add it here.)
 # --no-rlimits: avahi can't raise rlimits in a container; don't let that abort it.
 set -euo pipefail
 
 exec 2>&1                         # fold stderr into stdout so avahi-log captures it
-exec avahi-daemon -f --no-rlimits
+exec avahi-daemon --no-rlimits

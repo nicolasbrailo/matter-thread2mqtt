@@ -104,10 +104,8 @@ RUN cd /src/ot-br-posix/build && ninja
 RUN mkdir /mt2mqtt-bin
 RUN ln -s /src/ot-br-posix/build/third_party/openthread/repo/src/posix/ot-ctl /mt2mqtt-bin
 RUN ln -s /src/ot-br-posix/build/src/agent/otbr-agent /mt2mqtt-bin
-RUN echo "/mt2mqtt-bin/otbr-agent -I wpan0 -B ot-infra -v -d 7 'spinel+hdlc+uart:///dev/ttyACM0?uart-baudrate=460800'" > /mt2mqtt-bin/mt2mqtt-otbr-agent
 RUN echo "echo -e 'ifconfig up \\n thread start' | ot-ctl" > /mt2mqtt-bin/mt2mqtt-otbr-net-start
 RUN echo "echo -e 'state' | ot-ctl" > /mt2mqtt-bin/mt2mqtt-otbr-net-state
-RUN chmod +x /mt2mqtt-bin/mt2mqtt-otbr-agent
 RUN chmod +x /mt2mqtt-bin/mt2mqtt-otbr-net-start
 RUN chmod +x /mt2mqtt-bin/mt2mqtt-otbr-net-state
 ENV PATH="/mt2mqtt-bin:${PATH}"
@@ -131,7 +129,6 @@ RUN git -C /src/connectedhomeip sparse-checkout set credentials/production/paa-r
 
 # Make the matter-server module available in system python
 RUN pip install --no-cache-dir "python-matter-server[server]"
-
 RUN apt-get install -y --no-install-recommends \
       libglib2.0-0 \
       libnl-route-3-200
@@ -140,17 +137,11 @@ RUN mkdir /data
 RUN ln -s /data /mt2mqtt-run/matter-server-data
 
 RUN echo "matter-server " \
-            "--storage-path /mt2mqtt-run/matter-server-data "\
-            "--paa-root-cert-dir /src/connectedhomeip/credentials/production/paa-root-certs "\
-            "--listen-address 127.0.0.1 "\
-            "--port 5580" >/mt2mqtt-bin/mt2mqtt-matter-server.sh
-RUN echo "matter-server " \
             "--bluetooth-adapter 0 "\
             "--storage-path /mt2mqtt-run/matter-server-data "\
             "--paa-root-cert-dir /src/connectedhomeip/credentials/production/paa-root-certs "\
             "--listen-address 127.0.0.1 "\
             "--port 5580" >/mt2mqtt-bin/mt2mqtt-matter-server-commission.sh
-RUN chmod +x /mt2mqtt-bin/mt2mqtt-matter-server.sh
 RUN chmod +x /mt2mqtt-bin/mt2mqtt-matter-server-commission.sh
 
 
@@ -167,20 +158,24 @@ RUN set -eux; \
       tar -C / -Jxpf /tmp/s6-arch.tar.xz; \
       rm -f /tmp/s6-noarch.tar.xz /tmp/s6-arch.tar.xz
 
-# apt cache not needed anymore, and it's big
-RUN rm -rf /var/lib/apt/lists/*
-
 # --- container init ---------------------------------------------------------
 # Old hand-rolled init: no longer the entrypoint, but kept in the image for
 # reference and manual poking (s6-overlay's /init replaces it below).
 # TODO: Need to port this to s6, then remove: ## COPY entrypoint.sh /mt2mqtt-bin/entrypoint.sh
 # TODO: Need to port this to s6, then remove: ## RUN chmod +x /mt2mqtt-bin/entrypoint.sh
 
-# Our s6 service definitions: ot-infra oneshot + dbus/avahi longruns + loggers.
-# (run scripts keep their +x bit from the build context.)
+# s6 handles container services startup, like an init.d
 COPY s6-overlay/s6-rc.d /etc/s6-overlay/s6-rc.d
 
-# s6-overlay's /init is PID 1: brings up the user bundle (ot-infra -> dbus ->
-# avahi + loggers), supervises the daemons, and reaps zombies / forwards signals.
+RUN echo 'for s in /run/service/*; do printf "%-22s " "$(basename "$s")"; /command/s6-svstat "$s"; done' > /mt2mqtt-bin/mt2mqtt-services.sh
+
+# Abort the container if startup fails
+ENV S6_BEHAVIOUR_IF_STAGE2_FAILS=2
+
+# s6-overlay's /init is PID 1
 ENTRYPOINT ["/init"]
+
+# -- Cleanup
+# apt cache not needed anymore, and it's big
+RUN rm -rf /var/lib/apt/lists/*
 

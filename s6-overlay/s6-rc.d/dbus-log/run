@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Logger for the dbus service. s6 pipes dbus's stdout into here; s6-log writes
-# rotated, timestamped files to /mt2mqtt-run/log/dbus/current.
-#   n5      keep # rotated files
+# rotated, timestamped files to /var/log/dbus/current. All service logs live
+# under /var/log so a single bind mount exposes them on the host.
+#   n5       keep 5 rotated files
 #   s1000000 rotate at ~1 MB
 set -euo pipefail
 
-mkdir -p /mt2mqtt-run/log            # s6-log creates the per-service dir itself
-exec s6-log -b n5 s1000000 /mt2mqtt-run/log/dbus
+exec s6-log -b n5 s1000000 /var/log/dbus    # s6-log creates the leaf dir itself

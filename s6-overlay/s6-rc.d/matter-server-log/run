@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Logger for the matter-server service. s6 pipes matter-server's stdout into here;
+# s6-log writes rotated, timestamped files to /var/log/matter-server/current. All
+# service logs live under /var/log so a single bind mount exposes them on the host.
+#   n5        keep 5 rotated files
+#   s10000000 rotate at ~10 MB
+set -euo pipefail
+
+exec s6-log -b n5 s10000000 /var/log/matter-server    # s6-log creates the leaf dir itself

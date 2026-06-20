@@ -1,0 +1,30 @@
+# s6-rc reads this 'up' file as an execline command line (no shebang); it execs
+# a single bash invocation.
+#
+# Readiness gate for the Thread network: bring the interface up, start the
+# network, then block until otbr-agent reports it has attached to the mesh
+# (role leader, router, or child). A non-zero exit (timeout) makes s6-rc mark
+# this oneshot failed, so anything depending on it won't start.
+#
+# Notes for editing: this runs through execline first, so keep '$' usages to
+# bare '$(...)' / '$' (no '${...}', which execline would try to expand) and
+# avoid backslash escapes like '\n' (execline would turn them into real chars).
+# 'set -e' is intentionally omitted: 'thread start' errors harmlessly if the
+# network is already up (e.g. on a restart with persisted state).
+bash -c "
+  set -uo pipefail
+  exec >> /var/log/otbr-agent-net.log 2>&1
+  echo '[otbr-agent-net] bringing Thread interface up, starting network...'
+  ot-ctl ifconfig up
+  ot-ctl thread start
+  for _ in $(seq 1 12); do
+    if ot-ctl state | grep -E '^(leader|router|child)' >/dev/null; then
+      echo '[otbr-agent-net] attached to mesh; network ready.'
+      exit 0
+    fi
+    echo '[otbr-agent-net] network not ready, waiting 10 seconds...'
+    sleep 10
+  done
+  echo '[otbr-agent-net] timed out waiting to attach to mesh, check logs in /var/log/otbr-agent' >&2
+  exit 1
+"

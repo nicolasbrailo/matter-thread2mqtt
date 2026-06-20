@@ -12,6 +12,12 @@ CONTAINER = $(shell docker ps --format '{{.Names}}' | grep -E '^$(NAME)(-commiss
 # can be backed up directly from the host. Override with `make start RUNDIR=...`.
 RUNDIR := $(CURDIR)/mt2mqtt-run
 
+# Host directory bind-mounted at /var/log, where all in-container logs land: the
+# s6 catch-all (/var/log/s6-overlay) plus the per-service loggers
+# (/var/log/{dbus,avahi,otbr-agent}). Exposed so logs are readable from the host
+# and survive `make stop`. Override with `make start LOGDIR=...`.
+LOGDIR := $(CURDIR)/mt2mqtt-log
+
 rebuild:
 	docker build -t mt2mqtt:dev -f ./Dockerfile .
 
@@ -22,9 +28,10 @@ RCP_BYID := /dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_E4:B3:23:
 RCP      := $(shell readlink -f '$(RCP_BYID)')
 
 start:
-	mkdir -p '$(RUNDIR)'
+	mkdir -p '$(RUNDIR)' '$(LOGDIR)'
 	docker run -d --name $(NAME) \
 		-v '$(RUNDIR)':/mt2mqtt-run \
+		-v '$(LOGDIR)':/var/log \
 		--device $(RCP):/dev/ttyACM0 \
 		--device /dev/net/tun --cap-add NET_ADMIN \
 		mt2mqtt:dev
@@ -45,7 +52,7 @@ start:
 # $(CONTAINER), and `stop-commission` tears it down and restarts host
 # bluetooth. You can't run `start` and `start-commission` at once.
 start-commission:
-	mkdir -p '$(RUNDIR)'
+	mkdir -p '$(RUNDIR)' '$(LOGDIR)'
 	# mask, not just stop: BlueZ is D-Bus-activated and WirePlumber's bluetooth
 	# monitor pokes org.bluez constantly, respawning bluetoothd right after a
 	# plain stop — it then fights the container for the adapter. mask blocks the
@@ -56,6 +63,7 @@ start-commission:
 		--network host \
 		-e MT2M_COMMISSION=1 \
 		-v '$(RUNDIR)':/mt2mqtt-run \
+		-v '$(LOGDIR)':/var/log \
 		--device $(RCP):/dev/ttyACM0 \
 		--device /dev/net/tun \
 		--cap-add NET_ADMIN --cap-add NET_RAW \
