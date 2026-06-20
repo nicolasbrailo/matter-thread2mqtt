@@ -105,9 +105,7 @@ RUN cd /src/ot-br-posix/build && ninja
 RUN mkdir /mt2mqtt-bin
 RUN ln -s /src/ot-br-posix/build/third_party/openthread/repo/src/posix/ot-ctl /mt2mqtt-bin
 RUN ln -s /src/ot-br-posix/build/src/agent/otbr-agent /mt2mqtt-bin
-RUN echo "echo -e 'ifconfig up \\n thread start' | ot-ctl" > /mt2mqtt-bin/mt2mqtt-otbr-net-start
-RUN echo "echo -e 'state' | ot-ctl" > /mt2mqtt-bin/mt2mqtt-otbr-net-state
-RUN chmod +x /mt2mqtt-bin/mt2mqtt-otbr-net-start
+RUN echo "ot-ctl state" > /mt2mqtt-bin/mt2mqtt-otbr-net-state
 RUN chmod +x /mt2mqtt-bin/mt2mqtt-otbr-net-state
 ENV PATH="/mt2mqtt-bin:${PATH}"
 
@@ -155,6 +153,7 @@ RUN set -eux; \
 COPY s6-overlay/s6-rc.d /etc/s6-overlay/s6-rc.d
 
 RUN echo 'for s in /run/service/*; do printf "%-22s " "$(basename "$s")"; /command/s6-svstat "$s"; done' > /mt2mqtt-bin/mt2mqtt-services.sh
+RUN chmod +x /mt2mqtt-bin/mt2mqtt-services.sh
 
 # Abort the container if startup fails
 ENV S6_BEHAVIOUR_IF_STAGE2_FAILS=2
