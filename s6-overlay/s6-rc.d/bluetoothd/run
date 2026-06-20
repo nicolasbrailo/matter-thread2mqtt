@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Longrun: bluetoothd (BLE stack), needed only for Matter BLE commissioning.
+# Started unconditionally now (no MT2M_COMMISSION gate). Whether a BT adapter is
+# visible depends on the netns: `make start-commission` uses --network host so
+# the host adapter is present; plain `make start` runs in a bridge netns where no
+# BT controller exists.
+#
+# If no adapter is visible we log that BT is unavailable and take this service
+# down, so s6-supervise does not restart-loop it. This failure is non-critical by
+# design: a *longrun* that exits does NOT fail the s6-rc bring-up (unlike a
+# oneshot), so S6_BEHAVIOUR_IF_STAGE2_FAILS=2 will not tear the container down.
+# The "up" state is reported when this process spawns -- before the check below
+# runs -- so self-downing afterwards can't be mistaken for a bring-up failure.
+set -uo pipefail
+
+exec 2>&1                         # fold stderr into stdout so bluetoothd-log captures it
+
+# A BT controller shows up as /sys/class/bluetooth/hci* (netns-scoped). None -> no adapter.
+if ! compgen -G '/sys/class/bluetooth/hci*' >/dev/null; then
+    echo "[bluetoothd] BT disabled, no commissioning possible (no adapter found)"
+    exec s6-svc -d /run/service/bluetoothd    # stay down; don't restart-loop
+fi
+
+echo "[bluetoothd] BT adapter found; starting bluetoothd..."
+exec /usr/libexec/bluetooth/bluetoothd -n -d

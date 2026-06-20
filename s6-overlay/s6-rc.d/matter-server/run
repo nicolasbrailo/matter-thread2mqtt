@@ -2,8 +2,24 @@
 set -euo pipefail
 
 exec 2>&1                         # fold stderr into stdout so matter-server-log captures it
-exec matter-server \
-    --storage-path /mt2mqtt-run/matter-server-data \
-    --paa-root-cert-dir /src/connectedhomeip/credentials/production/paa-root-certs \
-    --listen-address 127.0.0.1 \
+
+args=(
+    --storage-path /mt2mqtt-run/matter-server-data
+    --paa-root-cert-dir /src/connectedhomeip/credentials/production/paa-root-certs
+    --listen-address 127.0.0.1
     --port 5580
+)
+
+# Enable BLE commissioning only when a BT adapter is present (which is exactly
+# when the bluetoothd service is up). We test the adapter directly rather than
+# bluetoothd's s6 state: bluetoothd self-downs when there's no adapter, and that
+# self-down races with matter-server starting, so its 'up' flag is unreliable
+# here. The adapter is the race-free source of truth.
+if compgen -G '/sys/class/bluetooth/hci*' >/dev/null; then
+    echo "[matter-server] BT adapter present; enabling BLE commissioning (--bluetooth-adapter 0)"
+    args+=(--bluetooth-adapter 0)
+else
+    echo "[matter-server] no BT adapter; starting without BLE commissioning"
+fi
+
+exec matter-server "${args[@]}"

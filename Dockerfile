@@ -7,9 +7,10 @@
 # Base: Debian bookworm-slim (glibc + apt + supported by ot-br-posix bootstrap, even if we don't use it)
 FROM python:3.13-slim-bookworm
 
+RUN apt-get update
+
 ## --- dev / debug utilities --------------------------------------------------
 ## Purely for poking at a running container; none of this is required to run
-RUN apt-get update
 RUN apt-get install -y --no-install-recommends \
       vim \
       file \
@@ -136,14 +137,6 @@ RUN apt-get install -y --no-install-recommends \
 RUN mkdir /data
 RUN ln -s /data /mt2mqtt-run/matter-server-data
 
-RUN echo "matter-server " \
-            "--bluetooth-adapter 0 "\
-            "--storage-path /mt2mqtt-run/matter-server-data "\
-            "--paa-root-cert-dir /src/connectedhomeip/credentials/production/paa-root-certs "\
-            "--listen-address 127.0.0.1 "\
-            "--port 5580" >/mt2mqtt-bin/mt2mqtt-matter-server-commission.sh
-RUN chmod +x /mt2mqtt-bin/mt2mqtt-matter-server-commission.sh
-
 
 # --- s6-overlay: lightweight container init / process supervisor ------------
 RUN apt-get install -y --no-install-recommends xz-utils
@@ -157,12 +150,6 @@ RUN set -eux; \
       tar -C / -Jxpf /tmp/s6-noarch.tar.xz; \
       tar -C / -Jxpf /tmp/s6-arch.tar.xz; \
       rm -f /tmp/s6-noarch.tar.xz /tmp/s6-arch.tar.xz
-
-# --- container init ---------------------------------------------------------
-# Old hand-rolled init: no longer the entrypoint, but kept in the image for
-# reference and manual poking (s6-overlay's /init replaces it below).
-# TODO: Need to port this to s6, then remove: ## COPY entrypoint.sh /mt2mqtt-bin/entrypoint.sh
-# TODO: Need to port this to s6, then remove: ## RUN chmod +x /mt2mqtt-bin/entrypoint.sh
 
 # s6 handles container services startup, like an init.d
 COPY s6-overlay/s6-rc.d /etc/s6-overlay/s6-rc.d
