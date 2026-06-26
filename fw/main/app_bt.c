@@ -35,6 +35,7 @@
 
 #include "bt.h"
 #include "mux.h"
+#include "spinel.h"
 
 static const char *tag = "mt2m";
 
@@ -214,7 +215,8 @@ void bt_init(void) {
 }
 
 void app_main(void) {
-  ESP_ERROR_CHECK(mux_init()); // USB link + log hook up first, so BT logs are muxed
-  bt_init();                   // controller boots; its logs flow over the mux
+  ESP_ERROR_CHECK(mux_init()); // USB link + log hook up first, so all logs are muxed
+  bt_init();                   // BLE controller; its logs flow over the mux
+  spinel_init();               // OpenThread RCP + 802.15.4 radio (no host transport yet, S1)
   mux_run();                   // blocking USB RX loop, never returns
 }

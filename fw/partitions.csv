@@ -1,0 +1,7 @@
+# Name,   Type, SubType, Offset,   Size,     Flags
+# Table lives at 0x8000 (default), so the first partition starts at 0x9000.
+# App partition fills the rest of the 2 MB flash to fit BLE controller + OpenThread.
+# If the image still overflows, bump CONFIG_ESPTOOLPY_FLASHSIZE (e.g. 4MB) and grow factory.
+nvs,      data, nvs,     0x9000,   0x6000,
+phy_init, data, phy,     0xf000,   0x1000,
+factory,  app,  factory, 0x10000,  0x1F0000,

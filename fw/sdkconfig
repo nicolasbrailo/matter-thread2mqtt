@@ -1035,20 +1035,14 @@ CONFIG_ESPTOOLPY_MONITOR_BAUD=115200
 #
 # Partition Table
 #
-# default:
-CONFIG_PARTITION_TABLE_SINGLE_APP=y
-# default:
+# CONFIG_PARTITION_TABLE_SINGLE_APP is not set
 # CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE is not set
-# default:
 # CONFIG_PARTITION_TABLE_TWO_OTA is not set
-# default:
 # CONFIG_PARTITION_TABLE_TWO_OTA_LARGE is not set
-# default:
-# CONFIG_PARTITION_TABLE_CUSTOM is not set
-# default:
+CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 # default:
-CONFIG_PARTITION_TABLE_FILENAME="partitions_singleapp.csv"
+CONFIG_PARTITION_TABLE_FILENAME="partitions.csv"
 # default:
 CONFIG_PARTITION_TABLE_OFFSET=0x8000
 # default:
@@ -1435,6 +1429,13 @@ CONFIG_BT_LE_DFT_SYNC_SCHED_PRIO_LEVEL=1
 # CONFIG_BLE_MESH is not set
 
 #
+# Console Library
+#
+# default:
+# CONFIG_CONSOLE_SORTED_HELP is not set
+# end of Console Library
+
+#
 # eFuse Bit Manager
 #
 # default:
@@ -1450,7 +1451,6 @@ CONFIG_EFUSE_MAX_BLK_LEN=256
 #
 # default:
 CONFIG_ESP_COEX_ENABLED=y
-# default:
 CONFIG_ESP_COEX_SW_COEXIST_ENABLE=y
 # default:
 # CONFIG_ESP_COEX_POWER_MANAGEMENT is not set
@@ -1500,7 +1500,7 @@ CONFIG_SPI_SLAVE_ISR_IN_IRAM=y
 # ESP-Driver:UART Configurations
 #
 # default:
-# CONFIG_UART_ISR_IN_IRAM is not set
+CONFIG_UART_ISR_IN_IRAM=y
 # end of ESP-Driver:UART Configurations
 
 #
@@ -2170,8 +2170,7 @@ CONFIG_ESP_WIFI_ENTERPRISE_SUPPORT=y
 # CONFIG_FREERTOS_SMP is not set
 # default:
 CONFIG_FREERTOS_UNICORE=y
-# default:
-CONFIG_FREERTOS_HZ=100
+CONFIG_FREERTOS_HZ=1000
 # default:
 CONFIG_FREERTOS_OPTIMIZED_SCHEDULER=y
 # default:
@@ -2317,6 +2316,36 @@ CONFIG_HEAP_TLSF_USE_ROM_IMPL=y
 # default:
 # CONFIG_HEAP_PLACE_FUNCTION_INTO_FLASH is not set
 # end of Heap memory debugging
+
+#
+# IEEE 802.15.4
+#
+CONFIG_IEEE802154_ENABLED=y
+# default:
+CONFIG_IEEE802154_RX_BUFFER_SIZE=20
+# default:
+# CONFIG_IEEE802154_CCA_CARRIER is not set
+# default:
+CONFIG_IEEE802154_CCA_ED=y
+# default:
+# CONFIG_IEEE802154_CCA_CARRIER_OR_ED is not set
+# default:
+# CONFIG_IEEE802154_CCA_CARRIER_AND_ED is not set
+# default:
+CONFIG_IEEE802154_CCA_MODE=1
+# default:
+CONFIG_IEEE802154_CCA_THRESHOLD=-75
+# default:
+CONFIG_IEEE802154_PENDING_TABLE_SIZE=20
+# default:
+# CONFIG_IEEE802154_MULTI_PAN_ENABLE is not set
+# default:
+CONFIG_IEEE802154_TIMING_OPTIMIZATION=y
+# default:
+# CONFIG_IEEE802154_DEBUG is not set
+# default:
+# CONFIG_IEEE802154_DEBUG_ASSERT_MONITOR is not set
+# end of IEEE 802.15.4
 
 #
 # Log
@@ -3113,6 +3142,196 @@ CONFIG_MBEDTLS_PKCS1_V21=y
 # end of NVS
 
 #
+# OpenThread
+#
+CONFIG_OPENTHREAD_ENABLED=y
+
+#
+# Thread Task Parameters
+#
+# default:
+CONFIG_OPENTHREAD_TASK_NAME="ot_main"
+CONFIG_OPENTHREAD_TASK_SIZE=3072
+# default:
+CONFIG_OPENTHREAD_TASK_PRIORITY=5
+# end of Thread Task Parameters
+
+#
+# Thread Version Message
+#
+# default:
+CONFIG_OPENTHREAD_PACKAGE_NAME="openthread-esp32"
+# default:
+CONFIG_OPENTHREAD_PLATFORM_INFO="esp32c6"
+# end of Thread Version Message
+
+#
+# Thread Console
+#
+# CONFIG_OPENTHREAD_CONSOLE_ENABLE is not set
+# CONFIG_OPENTHREAD_CLI is not set
+# default:
+CONFIG_OPENTHREAD_CONSOLE_COMMAND_PREFIX="ot"
+# end of Thread Console
+
+#
+# Thread Core Features
+#
+
+#
+# Thread Operational Dataset
+#
+# default:
+CONFIG_OPENTHREAD_NETWORK_NAME="OpenThread-ESP"
+# default:
+CONFIG_OPENTHREAD_MESH_LOCAL_PREFIX="fd00:db8:a0:0::/64"
+# default:
+CONFIG_OPENTHREAD_NETWORK_CHANNEL=15
+# default:
+CONFIG_OPENTHREAD_NETWORK_PANID=0x1234
+# default:
+CONFIG_OPENTHREAD_NETWORK_EXTPANID="dead00beef00cafe"
+# default:
+CONFIG_OPENTHREAD_NETWORK_MASTERKEY="00112233445566778899aabbccddeeff"
+# default:
+CONFIG_OPENTHREAD_NETWORK_PSKC="104810e2315100afd6bc9215a6bfac53"
+# end of Thread Operational Dataset
+
+# CONFIG_OPENTHREAD_FTD is not set
+# CONFIG_OPENTHREAD_MTD is not set
+CONFIG_OPENTHREAD_RADIO=y
+
+#
+# Thread 15.4 Radio Link
+#
+# default:
+CONFIG_OPENTHREAD_RADIO_NATIVE=y
+# default:
+# CONFIG_OPENTHREAD_RADIO_SPINEL_UART is not set
+# default:
+# CONFIG_OPENTHREAD_RADIO_SPINEL_SPI is not set
+# default:
+# CONFIG_OPENTHREAD_RADIO_154_NONE is not set
+# end of Thread 15.4 Radio Link
+
+#
+# Thread Radio Co-Processor Feature
+#
+# default:
+CONFIG_OPENTHREAD_RCP_UART=y
+# default:
+# CONFIG_OPENTHREAD_RCP_SPI is not set
+# default:
+CONFIG_OPENTHREAD_NCP_VENDOR_HOOK=y
+# default:
+# CONFIG_OPENTHREAD_RCP_SPINEL_CONSOLE is not set
+# end of Thread Radio Co-Processor Feature
+
+# CONFIG_OPENTHREAD_COMMISSIONER is not set
+# CONFIG_OPENTHREAD_JOINER is not set
+# CONFIG_OPENTHREAD_SRP_CLIENT is not set
+# CONFIG_OPENTHREAD_DNS_CLIENT is not set
+# default:
+# CONFIG_OPENTHREAD_DNS64_CLIENT is not set
+# default:
+# CONFIG_OPENTHREAD_TIMING_OPTIMIZATION is not set
+# default:
+# CONFIG_OPENTHREAD_LINK_METRICS is not set
+# default:
+# CONFIG_OPENTHREAD_BORDER_AGENT_ENABLE is not set
+# default:
+# CONFIG_OPENTHREAD_MACFILTER_ENABLE is not set
+# default:
+# CONFIG_OPENTHREAD_CSL_ENABLE is not set
+
+#
+# CSL Configurations
+#
+# default:
+CONFIG_OPENTHREAD_CSL_ACCURACY=50
+# default:
+CONFIG_OPENTHREAD_CSL_UNCERTAIN=0
+# default:
+# CONFIG_OPENTHREAD_CSL_DEBUG_ENABLE is not set
+# end of CSL Configurations
+
+# default:
+# CONFIG_OPENTHREAD_TIME_SYNC is not set
+# default:
+# CONFIG_OPENTHREAD_RX_ON_WHEN_IDLE is not set
+# CONFIG_OPENTHREAD_DIAG is not set
+
+#
+# OpenThread Stack Parameters
+#
+
+#
+# Thread Address Query Config
+#
+# end of Thread Address Query Config
+
+# default:
+CONFIG_OPENTHREAD_PREFERRED_CHANNEL_MASK=0x7fff800
+# default:
+CONFIG_OPENTHREAD_SUPPORTED_CHANNEL_MASK=0x7fff800
+# default:
+CONFIG_OPENTHREAD_NUM_MESSAGE_BUFFERS=65
+# default:
+CONFIG_OPENTHREAD_XTAL_ACCURACY=10
+# default:
+CONFIG_OPENTHREAD_BUS_LATENCY=4000
+# default:
+CONFIG_OPENTHREAD_MLE_MAX_CHILDREN=10
+# default:
+CONFIG_OPENTHREAD_TMF_ADDR_CACHE_ENTRIES=20
+# default:
+CONFIG_OPENTHREAD_UART_BUFFER_SIZE=2048
+# default:
+CONFIG_OPENTHREAD_MAC_MAX_CSMA_BACKOFFS_DIRECT=4
+# end of OpenThread Stack Parameters
+# end of Thread Core Features
+
+#
+# Thread Log
+#
+# CONFIG_OPENTHREAD_LOG_LEVEL_DYNAMIC is not set
+# default:
+# CONFIG_OPENTHREAD_LOG_LEVEL_NONE is not set
+# default:
+# CONFIG_OPENTHREAD_LOG_LEVEL_CRIT is not set
+# default:
+# CONFIG_OPENTHREAD_LOG_LEVEL_WARN is not set
+# default:
+# CONFIG_OPENTHREAD_LOG_LEVEL_NOTE is not set
+# default:
+CONFIG_OPENTHREAD_LOG_LEVEL_INFO=y
+# default:
+# CONFIG_OPENTHREAD_LOG_LEVEL_DEBG is not set
+# default:
+CONFIG_OPENTHREAD_LOG_LEVEL=4
+# end of Thread Log
+
+#
+# Thread Extensioned Features
+#
+# default:
+# CONFIG_OPENTHREAD_HEADER_CUSTOM is not set
+# end of Thread Extensioned Features
+
+#
+# OpenThread Spinel
+#
+# default:
+# CONFIG_OPENTHREAD_SPINEL_ONLY is not set
+# default:
+CONFIG_OPENTHREAD_SPINEL_RX_FRAME_BUFFER_SIZE=1024
+# end of OpenThread Spinel
+
+# default:
+# CONFIG_OPENTHREAD_DEBUG is not set
+# end of OpenThread
+
+#
 # PThreads
 #
 # default:
@@ -3240,7 +3459,7 @@ CONFIG_VFS_SUPPORT_SELECT=y
 # default:
 CONFIG_VFS_SUPPRESS_SELECT_DEBUG_OUTPUT=y
 # default:
-# CONFIG_VFS_SELECT_IN_RAM is not set
+CONFIG_VFS_SELECT_IN_RAM=y
 # default:
 # CONFIG_VFS_SUPPORT_TERMIOS is not set
 # default:

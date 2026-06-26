@@ -359,7 +359,7 @@ module plunger() {
 
 enclosure();
 
-/*
+
 // Lid, shown flat beside the box (print top-face-down)
 translate([outer_x + 10, 0, 0])
     lid();
@@ -368,4 +368,3 @@ translate([outer_x + 10, 0, 0])
 translate([outer_x + 30, 0, 2*switch_h+switch_top_z])
     rotate([-180])
         plunger();
-*/

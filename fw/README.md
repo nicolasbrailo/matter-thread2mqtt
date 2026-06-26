@@ -2,15 +2,16 @@
 
 Expose one ESP32-C6 to a Linux host over a **single USB-Serial-JTAG link** as both
 a **BLE controller** (Linux/BlueZ is the host) and a **Thread/Spinel RCP**. A mux
-frames several logical channels onto the one link; the Linux driver (`host/host.c`)
-demuxes and presents real OS interfaces (an `hciN` via `/dev/vhci`; a Spinel PTY,
-planned).
+frames several logical channels onto the one link; the Linux driver
+(`host_driver/host.c`) demuxes and presents real OS interfaces (an `hciN` via
+`/dev/vhci`; a Spinel PTY, planned).
 
 ## Layout
 
 - `main/mux.c` / `mux.h` — the multiplexer: USB link, framing, TX/RX, `ESP_LOG` capture.
 - `main/app_bt.c` / `bt.h` — BLE controller + VHCI↔mux bridge; holds `app_main()`.
-- `host/host.c` — Linux driver: demux, `/dev/vhci` BT bridge, log printer.
+- `host_driver/host.c` — Linux driver: demux, `/dev/vhci` BT bridge, log printer
+  (built with `host_driver/Makefile`).
 
 ## Build / run
 
@@ -22,12 +23,47 @@ idf.py build flash monitor
 ```
 Host driver:
 ```
-cc host/host.c -o /tmp/host
-sudo /tmp/host /dev/ttyACM0      # native-USB CDC; root needed for /dev/vhci
+make -C host_driver
+sudo host_driver/host /dev/ttyACM0   # native-USB CDC; root needed for /dev/vhci
 ```
 The maintainer builds/flashes/tests on hardware — make code changes and hand off;
 don't run build/flash yourself unless asked. IDF console/logs go to **UART0** (a
 separate physical port), so they never pollute the mux on the USB link.
+
+## Bring up / test the BT adapter
+
+Flash the firmware, then on the Linux host:
+
+```
+sudo hciconfig list                       # See available devices
+sudo hciconfig hci0 down                  # take the onboard/built-in adapter out of the way
+                                          #   (or: rfkill block <onboard id>)
+sudo host_driver/host /dev/ttyACM0        # note the "vhci: created hciN" line -> our index
+sudo btmon                                # confirm the Espressif controller (CC:8D:A2:…) comes up
+bluetoothctl                              # onboard is down -> ours is the only/default adapter (no select needed)
+  power on
+  scan on                                 # nearby BLE devices appear
+```
+
+Identify ours vs the onboard: the host driver prints the index; `hciconfig -a` shows
+`Bus: Virtual` and the Espressif address for ours; in `btmon` ours is the
+`= Open Index: CC:8D:A2:…` block.
+
+To keep **both** adapters up instead of downing the onboard, target ours by index
+(no MAC needed) — `btmgmt` is index-native:
+```
+sudo btmgmt --index hci1 power on
+sudo btmgmt --index hci1 find -l          # LE scan
+```
+(or, in bluetoothctl: `select $(hciconfig hci1 | grep -oE '([0-9A-F]{2}:){5}[0-9A-F]{2}')`).
+
+To pair a stress-test device, put a **BLE mouse** in pairing mode and pair it from
+`bluetoothctl` (or the GNOME Bluetooth panel, which uses the only present adapter
+once the onboard is down).
+
+Sanity check it's really flowing through us: with a scan or the mouse active,
+`Ctrl-C` the host driver → the adapter (`hciN`) tears down, the scan/mouse dies.
+Audio (A2DP) won't work — the C6 is BLE-only.
 
 ## Design (the decisions that matter)
 
@@ -114,18 +150,29 @@ source for the cleanest insertion: ideally `host_connection_mode = NONE` then in
 the NCP ourselves; fallback is supplying our own transport where it expects one.
 
 **Phases:**
-- **S0 — merge & boot:** pull OpenThread + IEEE802154 components into `fw`; enable
-  `OPENTHREAD_ENABLED/RADIO`, `RADIO_MODE_NATIVE`, **SW coexistence**, keep BT;
-  reconcile partition tables (RCP uses a custom `partitions.csv`); disable
-  `OPENTHREAD_RCP_SPINEL_CONSOLE` (we have our own log channel). Goal: builds & boots
-  both stacks.
-- **S1 — OT alongside, transport NONE:** `app_main`: `mux_init(); bt_init();
-  spinel_init(); mux_run();`. Verify OT+radio init, BT still works, coex up, no OOM.
-- **S2 — wire Spinel to mux:** new `spinel.c/.h` (like `bt.c`): NCP `send_cb` →
-  chunked `mux_tx_spinel`; `mux.c` `MUX_MSG_SPINEL` case → `spinel_rx_from_host` →
-  `otNcpHdlcReceive` under the OT lock.
-- **S3 — host PTY bridge:** `host.c` grows a PTY pump + a third poll fd; prints the
-  `/dev/pts/N` to use.
+- **S0 — build/config merge: DONE & VERIFIED.** `main/CMakeLists.txt` (explicit
+  `SRCS`, requires `openthread esp_event vfs`); `sdkconfig.defaults` enables
+  `OPENTHREAD_ENABLED/RADIO`, `IEEE802154_ENABLED`, SW coexistence (already on),
+  `FREERTOS_HZ` 100→1000, trims OT features, `OPENTHREAD_LOG_LEVEL_DYNAMIC=n`
+  (see gotchas); custom `partitions.csv` gives the app the full 2 MB. Builds & fits.
+- **S1 — OT alongside, transport NONE: DONE & VERIFIED.** `main/spinel.c/.h` +
+  `main/esp_ot_config.h` (native radio, `HOST_CONNECTION_MODE_NONE`); `spinel_init()`
+  registers the eventfd VFS + default event loop and calls `esp_openthread_start()`.
+  `app_main` = `mux_init(); bt_init(); spinel_init(); mux_run();`. Confirmed on
+  hardware: boots, `SPINEL: OpenThread RCP started` in the muxed logs, **BT mouse
+  still works** with the radio + coexistence active. Radio is up but idle (NONE =
+  nothing drives Spinel yet).
+- **S2 — wire Spinel to mux: ← NEXT.** New `main/spinel_*` code: init the OT NCP
+  HDLC transport ourselves (`otNcpHdlcInit(send_cb)`), `send_cb` → chunked
+  `mux_tx_spinel()`; add `mux.c` `MUX_MSG_SPINEL` case → `spinel_rx_from_host()` →
+  `otNcpHdlcReceive()` **under the OT lock** (`esp_openthread_lock_acquire/release`).
+  **First sub-task (the #1 unknown above):** confirm in the esp_openthread source how
+  to attach our own NCP when `host_connection_mode = NONE` — does `esp_openthread_start`
+  leave the NCP unset for us to init, or do we need a different entry? Headers worth a
+  look: `esp_openthread_spinel.h`, `esp_radio_spinel.h`, and the `otNcpHdlc*` OT core
+  API. (Add the new `.c` to `main/CMakeLists.txt` SRCS.)
+- **S3 — host PTY bridge:** `host_driver/host.c` grows a PTY pump + a third poll fd;
+  prints the `/dev/pts/N` to point `ot-daemon`/`otbr-agent` at.
 - **S4 — bring-up:** `ot-ctl`/`ot-daemon` form/join a network, ping a Thread node.
 - **S5 — coex stress:** BT (mouse/scan) and Thread traffic at once; both stable.
 
@@ -140,3 +187,17 @@ the NCP ourselves; fallback is supplying our own transport where it expects one.
   reliable flow stalls other channels' RX too. Per-channel RX queues would fix it.
 - `mux_rx_task` resync is still crude (flush-on-oversize); port the host's tail-scan
   resync if it matters.
+
+### Build gotchas (ESP-IDF)
+- **`sdkconfig.defaults` only seeds a *new* `sdkconfig`.** Editing it does nothing
+  to an existing `sdkconfig` (and `idf.py reconfigure` won't re-apply it either).
+  After changing defaults: `rm sdkconfig && idf.py set-target esp32c6 && idf.py build`
+  (set-target also wipes the build dir, so library configs like OpenThread's actually
+  rebuild). Or flip the option in `idf.py menuconfig`.
+- **List `SRCS` explicitly in `main/CMakeLists.txt`** — IDF evaluates it in CMake
+  script mode (requirement expansion), where `file(GLOB ... CONFIGURE_DEPENDS)` is
+  illegal, and a plain `GLOB` silently misses files added since the last reconfigure
+  (→ `undefined reference`). Add each new `.c` to the `SRCS` line.
+- **`CONFIG_OPENTHREAD_LOG_LEVEL_DYNAMIC=n`** is required: with it on,
+  `esp_openthread.cpp` calls `otLoggingSetLevel()`, which the OT lib here doesn't
+  provide → link error. Static level still routes OT logs to `ESP_LOG`/the mux.

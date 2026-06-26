@@ -7,3 +7,36 @@ CONFIG_BT_ENABLED=y
 CONFIG_BT_CONTROLLER_ONLY=y
 # Disable logging to usb, so we can use it as a BT adapter
 CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+
+# --- OpenThread RCP (Spinel) ---
+# Radio co-processor only (host runs the OT stack). The Spinel host connection is
+# wired to the mux in code (host_connection_mode = NONE), NOT to a UART/USB here.
+CONFIG_OPENTHREAD_ENABLED=y
+CONFIG_OPENTHREAD_RADIO=y
+CONFIG_IEEE802154_ENABLED=y
+# Trim features we don't need (host side owns them) to keep the image small.
+CONFIG_OPENTHREAD_CLI=n
+CONFIG_OPENTHREAD_BORDER_ROUTER=n
+CONFIG_OPENTHREAD_COMMISSIONER=n
+CONFIG_OPENTHREAD_JOINER=n
+CONFIG_OPENTHREAD_SRP_CLIENT=n
+CONFIG_OPENTHREAD_DNS_CLIENT=n
+CONFIG_OPENTHREAD_DIAG=n
+CONFIG_OPENTHREAD_CONSOLE_ENABLE=n
+CONFIG_OPENTHREAD_TASK_SIZE=3072
+# Static OT log level (not dynamic): with DYNAMIC=y, esp_openthread.cpp calls
+# otLoggingSetLevel(), which the OT lib here doesn't provide -> link error. Static
+# level still routes OT logs through ESP_LOG (the mux). Default level is INFO.
+CONFIG_OPENTHREAD_LOG_LEVEL_DYNAMIC=n
+
+# --- BLE + 802.15.4 coexistence (single 2.4 GHz radio) ---
+CONFIG_ESP_COEX_SW_COEXIST_ENABLE=y
+
+# OpenThread timing wants a 1 kHz tick (the RCP build used this; BT was validated
+# at 100 Hz, so re-check BT after this change).
+CONFIG_FREERTOS_HZ=1000
+
+# --- Partition table: custom, larger app to fit BLE controller + OpenThread ---
+# (default single-app ~1 MB is too small for both stacks)
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
