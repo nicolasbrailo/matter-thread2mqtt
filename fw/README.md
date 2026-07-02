@@ -97,6 +97,11 @@ with `portMAX` and rely on that one to break a wedge; don't make it infinite.
 **RX (host→fw):** USB read loop → stream buffer (blocking send) → `mux_rx_task`
 reassembles whole frames and dispatches per channel.
 
+**Observability:** `mux.c` keeps per-channel frame counters (BT/Spinel × tx/rx) and a
+low-priority `mux_stats_task` logs the per-channel counts every 5 s (deltas + running
+totals) via `ESP_LOG` — so the line rides the mux LOG channel to the host as well as
+UART0. tx counts successful reliable writes; rx counts dispatched frames.
+
 **Host framing/resync (`host.c`):** raw mode + `tcflush` on open; `drain_on_open()`
 swallows the post-open backlog; `process_frames()` resyncs by scanning for the tail
 sync-word (never trusts a possibly-bogus `len`).
@@ -106,6 +111,13 @@ sync-word (never trusts a possibly-bogus `len`).
 and paced by controller flow control; ctrl→host calls `mux_tx_bt()`. Host side:
 `/dev/vhci` presents a real `hciN`. Frame cap `MUX_TX_MAX_PAYLOAD`=528 ≥ max H4 ACL
 (`5 + CONFIG_BT_LE_ACL_BUF_SIZE` = 522), `_Static_assert`-guarded.
+
+**Spinel bridge:** RCP-only; OT runs on the host. Device side (`spinel.c`) re-inits the
+OT NCP onto a custom HDLC send callback that chunks into `mux_tx_spinel()`, and feeds
+host bytes to `otNcpHdlcReceive()` under the OT lock (see S2 / the #1-unknown writeup
+for why re-init). Unlike BT/VHCI there's no whole-packet-per-frame rule — Spinel is a
+byte stream, so it chunks freely across mux frames and the host reassembles by HDLC
+framing. Host side (`host.c`): a PTY presents `/dev/pts/N` for `ot-daemon`/`otbr-agent`.
 
 ## Current state
 
@@ -122,6 +134,43 @@ Two open items, both deferred:
   controller-to-host flow control. (Throughput / DLE / 2M-PHY tuning also untested.)
 - **SYNC handshake** deferred: drain+resync already gives clean framing. Only edge
   cases would benefit (plugged-but-not-reading 1 s stalls; clean reconnect).
+
+## Host integration: isolating matter-server, split at the D-Bus layer (← NEXT)
+
+The `hciN` this firmware exposes (via `/dev/vhci`) registers in the host's
+**initial network namespace**. That's a hard kernel constraint, not a config
+choice: the Linux Bluetooth subsystem only allows `AF_BLUETOOTH` sockets in
+`init_net` (`bt_sock_create()` → `-EAFNOSUPPORT` elsewhere) and `hci_vhci`
+always registers in `init_net`. So a bridge-mode (isolated-netns) container
+**cannot** open the adapter directly — `bluetoothd`/`hciconfig` inside it die
+with `Address family not supported by protocol`. Cutting the stack at HCI (vhci,
+H4-over-CDC) doesn't help: anything below GATT still needs a host BLE host-stack
+(`bluetoothd`) holding `AF_BLUETOOTH` sockets, pinning it to host-net.
+
+The fix is to **split at the D-Bus layer**, and it's now **verified** (spike,
+2026-06-27): `python-matter-server`/chip's Linux BLE path talks to BlueZ
+**purely over D-Bus** — it opens **zero** `AF_BLUETOOTH` sockets (confirmed by
+`strace -e socket` during a commission; the adapter-0 scan ran while a bogus
+`--bluetooth-adapter 123` failed instantly with "adapter unavailable", proving
+the adapter is resolved through `org.bluez`, not a raw HCI open). So:
+
+- `bluetoothd` runs on the **host** (`init_net`), owning this firmware's `hciN`.
+- `matter-server` runs in its **isolated** container and reaches BlueZ only
+  through a **bind-mounted system D-Bus socket** — a unix socket, *not*
+  netns-bound. The Matter commissioner stays host-fabric-owning yet
+  namespace-isolated; `wpan0`/avahi never leave the container.
+- Proven end to end: a bridge-mode container (own netns, **no** BT `--device`,
+  **no** `--network host`) drove a real 20 s BLE scan on the host `hci0` over the
+  bind-mounted socket. See NOTES.md "Path A" for the full writeup.
+
+**Next step — wire it up:** point matter-server at the host bus with
+`DBUS_SYSTEM_BUS_ADDRESS=unix:path=/run/host_dbus/system_bus_socket`
+(env in `matter-server/run`; mount in a dedicated Makefile target). Productionize
+with **`xdg-dbus-proxy --filter --talk=org.bluez`** in front of the host bus so
+the container can reach *only* `org.bluez` (not the whole host system bus) — that
+also drops the `--security-opt apparmor=unconfined` the raw-socket debug path
+needs. The `make start-bare` target is the throwaway debug version (raw bus +
+unconfined); the real target uses the filtered proxy.
 
 ## Next: Spinel / OpenThread RCP over the mux
 
@@ -144,10 +193,22 @@ firmware so the device does BLE **and** Thread over the one mux. Two facts drive
 - Reuses the reliable-channel infra. Spinel may **chunk across frames** (it's a
   stream — no whole-packet-per-frame constraint like BT/VHCI).
 
-**#1 unknown, resolve first:** esp_openthread exposes only `RCP_UART/SPI/USB` host
-modes — no "give bytes to my callback" seam. Read the esp_openthread component
-source for the cleanest insertion: ideally `host_connection_mode = NONE` then init
-the NCP ourselves; fallback is supplying our own transport where it expects one.
+**#1 unknown — RESOLVED.** esp_openthread exposes only `RCP_UART/SPI/USB` host
+modes, no "give bytes to my callback" seam. What actually happens: with
+`CONFIG_OPENTHREAD_RADIO` + `CONFIG_OPENTHREAD_RCP_UART` (our build), `ot_task_worker`
+**auto-inits an HDLC NCP** (`otAppNcpInit` → `otNcpHdlcInit(inst, NcpSend)`) wired to
+`otPlatUartSend` → `write(s_uart_fd)`. With `host_connection_mode = NONE` that fd is
+never opened (dead). Both `otAppNcpInit` and `otPlatUartSend` are non-weak and live
+inside `libopenthread.a`, so we can't override either, and the RCP transport is a
+forced Kconfig `choice` (can't select "none"). **The seam is the OT public API:** after
+`esp_openthread_start()`, re-init the singleton NCP with our own send callback —
+`otNcpHdlcInit(inst, our_send_cb)` under the OT lock. Re-init re-runs the `NcpBase`
+ctor on the same `sNcpRaw` static; its callback registrations are single-pointer
+overwrites or dedup'd (`otSetStateChangedCallback` is `IgnoreError`-wrapped), and the
+lock stalls the OT task so nothing runs mid-swap. The auto-init NCP never sends/receives
+real bytes before the swap (dead fd, no RX feed), so any boot reset frame is lost
+harmlessly — the host re-syncs on connect. RX/TX use `otNcpHdlcReceive()` /
+`otNcpHdlcSendDone()` (OT core, always compiled; only `otNcpHdlcInit` is vendor-hooked).
 
 **Phases:**
 - **S0 — build/config merge: DONE & VERIFIED.** `main/CMakeLists.txt` (explicit
@@ -162,18 +223,29 @@ the NCP ourselves; fallback is supplying our own transport where it expects one.
   hardware: boots, `SPINEL: OpenThread RCP started` in the muxed logs, **BT mouse
   still works** with the radio + coexistence active. Radio is up but idle (NONE =
   nothing drives Spinel yet).
-- **S2 — wire Spinel to mux: ← NEXT.** New `main/spinel_*` code: init the OT NCP
-  HDLC transport ourselves (`otNcpHdlcInit(send_cb)`), `send_cb` → chunked
-  `mux_tx_spinel()`; add `mux.c` `MUX_MSG_SPINEL` case → `spinel_rx_from_host()` →
-  `otNcpHdlcReceive()` **under the OT lock** (`esp_openthread_lock_acquire/release`).
-  **First sub-task (the #1 unknown above):** confirm in the esp_openthread source how
-  to attach our own NCP when `host_connection_mode = NONE` — does `esp_openthread_start`
-  leave the NCP unset for us to init, or do we need a different entry? Headers worth a
-  look: `esp_openthread_spinel.h`, `esp_radio_spinel.h`, and the `otNcpHdlc*` OT core
-  API. (Add the new `.c` to `main/CMakeLists.txt` SRCS.)
-- **S3 — host PTY bridge:** `host_driver/host.c` grows a PTY pump + a third poll fd;
-  prints the `/dev/pts/N` to point `ot-daemon`/`otbr-agent` at.
-- **S4 — bring-up:** `ot-ctl`/`ot-daemon` form/join a network, ping a Thread node.
+- **S2 — wire Spinel to mux: CODE COMPLETE, awaiting hardware verification.** In
+  `spinel.c`: `spinel_init()` re-inits the NCP after `esp_openthread_start()` with our
+  `spinel_ncp_send` callback (see #1 unknown above). `spinel_ncp_send` chunks the
+  HDLC buffer into `MUX_TX_MAX_PAYLOAD`-sized `mux_tx_spinel()` frames (Spinel is a
+  byte stream — split freely; host reassembles by HDLC framing), always returns the
+  full `len` (the encoder asserts it; drop on no-host rather than crash), then calls
+  `otNcpHdlcSendDone()` — mirroring `otPlatUartSend`'s synchronous send-then-done.
+  `mux.c` `MUX_MSG_SPINEL` case → `spinel_rx_from_host()` → `otNcpHdlcReceive()`
+  **under the OT lock** (`esp_openthread_lock_acquire(portMAX)` — host→fw blocks per
+  the backpressure invariant). No new `.c` (extends existing `spinel.c`). **To verify:**
+  flash, confirm `SPINEL: OpenThread RCP started (Spinel bridged to mux)` + BT mouse
+  still works; full Spinel exchange needs the S3 host PTY to actually drive it.
+- **S3 — host PTY bridge: CODE COMPLETE, awaiting hardware verification.**
+  `host_driver/host.c` opens a PTY (`pty_open()`: `posix_openpt`/`grantpt`/`unlockpt`,
+  raw termios so HDLC bytes pass untouched) and pumps it ↔ `MUX_MSG_SPINEL`: PTY
+  master is a third poll fd → host→fw `MUX_MSG_SPINEL` (chunked to `SPINEL_CHUNK_MAX`
+  512 ≤ fw cap 528, since Spinel is a stream); fw→host `MUX_MSG_SPINEL` → `write()` to
+  the master, inside `process_frames()`. On open it prints
+  `spinel+hdlc+uart:///dev/pts/N` to point `ot-daemon`/`otbr-agent` at. A held-open
+  slave fd (`g_pty_slave_fd`) keeps the master from reporting `POLLHUP` (busy-spin)
+  before an OT tool attaches. Bridge is optional like vhci: if `pty_open()` fails,
+  SPINEL frames are hex-dumped and the rest still works.
+- **S4 — bring-up: ← NEXT.** `ot-ctl`/`ot-daemon` form/join a network, ping a Thread node.
 - **S5 — coex stress:** BT (mouse/scan) and Thread traffic at once; both stable.
 
 ## Gotchas

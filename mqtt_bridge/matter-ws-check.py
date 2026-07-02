@@ -21,6 +21,8 @@ URL = "ws://127.0.0.1:5580/ws"
 
 
 def fetch_thread_dataset() -> str:
+    # TODO
+    return "0e080000000000010000000300001a4a0300000c35060004001fffe00208ce1b1e6984e805000708fd6d3415bd5ced9e0510294a58aa6b7baabd2149a4faa6f8db55030f4f70656e5468726561642d31366465010216de0410e175d202043a12a875d6045e814ccdb10c0402a0f7f8"
     """Return the active Thread operational dataset as hex, from otbr-agent.
 
     ot-ctl is a thin D-Bus client, so this only works while otbr-agent is
@@ -71,7 +73,8 @@ async def main() -> None:
         # --- commissioning (uncomment when ready, with a real MT: code) -----
         # (BLE + Thread), device freshly reset and BLE advertising:
         print("WAITING FOR DEVICE NOW....")
-        await client.commission_with_code("04554434631", network_only=False)
+        #await client.commission_with_code("04554434631", network_only=False)
+        await client.commission_with_code("25417509817", network_only=False)
         print("DEVICE HAS BEEN WAITED")
 
         listen_task.cancel()

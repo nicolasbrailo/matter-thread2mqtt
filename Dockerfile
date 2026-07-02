@@ -22,6 +22,7 @@ RUN apt-get install -y --no-install-recommends \
       netcat-openbsd \
       dnsutils \
       iputils-ping \
+      strace \
       avahi-utils
 
 
@@ -160,6 +161,16 @@ ENV S6_BEHAVIOUR_IF_STAGE2_FAILS=2
 
 # s6-overlay's /init is PID 1
 ENTRYPOINT ["/init"]
+
+
+## TODO: fw host driver
+COPY fw/host_driver /src/fw/host_driver
+RUN make -C /src/fw/host_driver
+RUN ln -s /src/fw/host_driver/host /mt2mqtt-bin/spinel_bt_mux_driver
+
+## TODO: proxy mqtt
+COPY mqtt_bridge /src/
+
 
 # -- Cleanup
 # apt cache not needed anymore, and it's big

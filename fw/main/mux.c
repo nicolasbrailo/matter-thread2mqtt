@@ -14,6 +14,7 @@
 #include "freertos/task.h"
 
 #include "bt.h"
+#include "spinel.h"
 
 static const char *tag = "MUX";
 
@@ -62,6 +63,13 @@ struct mux_frame {
 
 static QueueHandle_t g_tx_q;
 static volatile uint32_t g_tx_dropped; // frames dropped due to a full queue
+
+// Per-channel mux frame counters. tx = fw->host, rx = host->fw. Each counter is
+// incremented from a single task (a channel's tx from its producer task, all rx
+// from mux_rx_task) and only read by the stats task, so plain volatile is enough --
+// a lost increment would at worst miscount a periodic log line.
+static volatile uint32_t g_cnt_bt_tx, g_cnt_bt_rx;
+static volatile uint32_t g_cnt_spinel_tx, g_cnt_spinel_rx;
 
 // Serializes every USB write. A real mutex (priority inheritance) on purpose:
 //   - multiple writer tasks now exist (the log drainer + reliable BT/Spinel
@@ -151,7 +159,12 @@ static int mux_tx_reliable(enum mux_msg_type msg, void *data, size_t len) {
   if (len > 0) {
     memcpy(f.payload, data, len);
   }
-  return mux_write_locked(&f, pdMS_TO_TICKS(MUX_TX_RELIABLE_TIMEOUT_MS));
+  const int rc = mux_write_locked(&f, pdMS_TO_TICKS(MUX_TX_RELIABLE_TIMEOUT_MS));
+  if (rc == 0) {
+    if (msg == MUX_MSG_BT)          g_cnt_bt_tx++;
+    else if (msg == MUX_MSG_SPINEL) g_cnt_spinel_tx++;
+  }
+  return rc;
 }
 
 int mux_tx_bt(void *data, size_t len)     { return mux_tx_reliable(MUX_MSG_BT, data, len); }
@@ -169,10 +182,12 @@ static int mux_demux_frame(enum mux_msg_type type, const void* payload, size_t l
       ESP_LOGW(tag, "fw rx'd muxed LOG message; only fw can tx LOGs");
       break;
     case MUX_MSG_BT:
+      g_cnt_bt_rx++;
       bt_rx_from_host(payload, len);
       break;
     case MUX_MSG_SPINEL:
-      // TODO
+      g_cnt_spinel_rx++;
+      spinel_rx_from_host((const uint8_t *)payload, len);
       break;
     default:
       // TODO handle error msg
@@ -248,6 +263,29 @@ static int mux_log_hook(const char *fmt, va_list ap) {
   return g_orig_log_vprintf ? g_orig_log_vprintf(fmt, ap) : vprintf(fmt, ap);
 }
 
+// Periodic mux frame-count report. Logs per-channel tx/rx over the last interval
+// (plus running totals) every MUX_STATS_INTERVAL_MS. Goes out via ESP_LOG, so it
+// rides the mux LOG channel to the host as well as the UART0 console. A plain task
+// (not the log hook / a reliable sender), so logging here is safe.
+#define MUX_STATS_INTERVAL_MS 5000
+static void mux_stats_task(void *arg) {
+  (void)arg;
+  uint32_t p_bt_tx = 0, p_bt_rx = 0, p_sp_tx = 0, p_sp_rx = 0;
+  for (;;) {
+    vTaskDelay(pdMS_TO_TICKS(MUX_STATS_INTERVAL_MS));
+    const uint32_t bt_tx = g_cnt_bt_tx, bt_rx = g_cnt_bt_rx;
+    const uint32_t sp_tx = g_cnt_spinel_tx, sp_rx = g_cnt_spinel_rx;
+    ESP_LOGI(tag,
+             "frames/%ds: BT tx=%u rx=%u | SPINEL tx=%u rx=%u "
+             "(totals BT %u/%u SPINEL %u/%u)",
+             MUX_STATS_INTERVAL_MS / 1000,
+             (unsigned)(bt_tx - p_bt_tx), (unsigned)(bt_rx - p_bt_rx),
+             (unsigned)(sp_tx - p_sp_tx), (unsigned)(sp_rx - p_sp_rx),
+             (unsigned)bt_tx, (unsigned)bt_rx, (unsigned)sp_tx, (unsigned)sp_rx);
+    p_bt_tx = bt_tx; p_bt_rx = bt_rx; p_sp_tx = sp_tx; p_sp_rx = sp_rx;
+  }
+}
+
 esp_err_t mux_init(void) {
   usb_serial_jtag_driver_config_t cfg = {
       .rx_buffer_size = 1024, .tx_buffer_size = 1024,
@@ -284,6 +322,11 @@ esp_err_t mux_init(void) {
   }
   if (xTaskCreate(mux_rx_task, "mux_rx", 4096, NULL, 5, NULL) != pdPASS) {
     ESP_LOGE(tag, "Can't create RX task");
+    return ESP_ERR_NO_MEM;
+  }
+  // Low priority: stats are best-effort and must never preempt the data path.
+  if (xTaskCreate(mux_stats_task, "mux_stats", 3072, NULL, 1, NULL) != pdPASS) {
+    ESP_LOGE(tag, "Can't create stats task");
     return ESP_ERR_NO_MEM;
   }
 

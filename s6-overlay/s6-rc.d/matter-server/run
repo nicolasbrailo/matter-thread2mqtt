@@ -10,16 +10,47 @@ args=(
     --port 5580
 )
 
-# Enable BLE commissioning only when a BT adapter is present (which is exactly
-# when the bluetoothd service is up). We test the adapter directly rather than
-# bluetoothd's s6 state: bluetoothd self-downs when there's no adapter, and that
-# self-down races with matter-server starting, so its 'up' flag is unreliable
-# here. The adapter is the race-free source of truth.
-if compgen -G '/sys/class/bluetooth/hci*' >/dev/null; then
-    echo "[matter-server] BT adapter present; enabling BLE commissioning (--bluetooth-adapter 0)"
+# Enable BLE commissioning from whatever BT path is actually wired in, in
+# priority order:
+#
+#   1. The HOST's BlueZ, reached over the host system D-Bus socket bind-mounted
+#      at $HOST_BUS. The container drives the host's bluetoothd -- which owns the
+#      adapter in init_net -- while staying in its own isolated netns; chip's
+#      Linux BLE layer is a pure BlueZ-over-D-Bus client (BTP-over-GATT, no raw
+#      AF_BLUETOOTH/L2CAP socket), so pointing only this process's system bus at
+#      the host bus is enough, and wpan0/avahi/the container's own dbus stay
+#      isolated. mDNS is chip minimal-mdns over raw sockets on ot-infra, not
+#      D-Bus, so this redirect doesn't disturb operational discovery.
+#
+#      The socket is mounted unconditionally by `make start`, so its mere
+#      presence is not proof BT is usable -- the socket is owned by the host's
+#      dbus-daemon, which is up even when bluetoothd/the adapter are not. We gate
+#      on org.bluez actually being *owned* on that bus (NameHasOwner). This keeps
+#      it a single container mode: BLE lights up automatically whenever the host
+#      has a working BlueZ, and the bridge degrades cleanly to operational-only
+#      (no --bluetooth-adapter, no crash) when it doesn't -- e.g. host Bluetooth
+#      toggled off / rfkill-blocked.
+#
+#   2. A BT adapter directly visible in THIS netns (host-net fallback): use the
+#      container's own bluetoothd on the container's own system bus.
+#
+#   3. Neither: run as an operational bridge, no BLE and no commissioning.
+#
+
+HOST_BUS=/run/host_dbus/system_bus_socket
+if [ -S "$HOST_BUS" ] \
+   && DBUS_SYSTEM_BUS_ADDRESS="unix:path=$HOST_BUS" \
+        dbus-send --system --print-reply --dest=org.freedesktop.DBus \
+          /org/freedesktop/DBus org.freedesktop.DBus.NameHasOwner \
+          string:org.bluez 2>/dev/null | grep -q 'boolean true'; then
+    echo "[matter-server] host BlueZ present on $HOST_BUS: BLE via host bluetoothd"
+    export DBUS_SYSTEM_BUS_ADDRESS="unix:path=$HOST_BUS"
+    args+=(--bluetooth-adapter 0)
+elif compgen -G '/sys/class/bluetooth/hci*' >/dev/null; then
+    echo "[matter-server] local BT adapter present: BLE via container BlueZ"
     args+=(--bluetooth-adapter 0)
 else
-    echo "[matter-server] no BT adapter; starting without BLE commissioning"
+    echo "[matter-server] no usable BlueZ (host bus or local adapter); no BLE commissioning"
 fi
 
 exec matter-server "${args[@]}"

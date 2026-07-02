@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Longrun: bluetoothd (BLE stack), needed only for Matter BLE commissioning.
-# Started unconditionally now (no MT2M_COMMISSION gate). Whether a BT adapter is
-# visible depends on the netns: `make start-commission` uses --network host so
-# the host adapter is present; plain `make start` runs in a bridge netns where no
-# BT controller exists.
+# Longrun: bluetoothd (BLE stack). This is the container's OWN BlueZ, kept only
+# as a fallback for a host-net posture (a BT adapter directly in this netns).
+# The primary commissioning path no longer uses it: `make start` reaches the
+# HOST's bluetoothd over the bind-mounted host system D-Bus socket, so the
+# container stays isolated and this daemon never runs. In that isolated netns no
+# BT controller exists, so this service self-downs (below) and stays down.
 #
 # If no adapter is visible we log that BT is unavailable and take this service
 # down, so s6-supervise does not restart-loop it. This failure is non-critical by
