@@ -1,6 +1,7 @@
 bash -c "
   set -euo pipefail
-  exec >> /var/log/ot-infra.log 2>&1
+  mkdir -p /mt2mqtt-run/logs
+  exec >> /mt2mqtt-run/logs/ot-infra.log 2>&1
   echo '[ot-infra] creating ot-infra dummy interface...'
   ip link show ot-infra >/dev/null 2>&1 || ip link add ot-infra type dummy
   ip link set ot-infra up

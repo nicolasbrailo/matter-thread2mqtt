@@ -9,32 +9,6 @@ FROM python:3.13-slim-bookworm
 
 RUN apt-get update
 
-## --- dev / debug utilities --------------------------------------------------
-## Purely for poking at a running container; none of this is required to run
-RUN apt-get install -y --no-install-recommends \
-      vim \
-      file \
-      less \
-      curl \
-      lsof \
-      htop \
-      procps \
-      netcat-openbsd \
-      dnsutils \
-      iputils-ping \
-      strace \
-      avahi-utils
-
-
-# Persistent mount for run config and settings (eg Thread network state).
-# This is meant to outlive the container: mount a host directory here at run time
-RUN mkdir -p /mt2mqtt-run
-
-
-#
-# Install ot-br-posix
-#
-
 # --- ot-br-posix build dependencies -----------------------------------------
 # Curated from ot-br-posix's script/bootstrap install_packages_apt(), trimmed
 # to our cmake flags: NAT64 / WEB / BACKBONE_ROUTER are OFF, so iptables, bind9,
@@ -58,7 +32,6 @@ RUN apt-get install -y --no-install-recommends \
       libgmock-dev \
       libgtest-dev
 
-# --- runtime dependencies ---------------------------------------------------
 # Needed to actually RUN otbr-agent: dbus, avahi-daemon (mDNS publisher), iproute2 (entrypoint
 # creates the ot-infra dummy interface with `ip link add`).
 RUN apt-get install -y --no-install-recommends \
@@ -66,11 +39,36 @@ RUN apt-get install -y --no-install-recommends \
       avahi-daemon \
       iproute2
 
-
 # Needed for commissioning: a BT stack
-# creates the ot-infra dummy interface with `ip link add`).
 RUN apt-get install -y --no-install-recommends \
       bluez
+
+# Needed for s6
+RUN apt-get install -y --no-install-recommends xz-utils
+
+## --- dev / debug utilities for poking at a running container; none of this is required to run
+RUN apt-get install -y --no-install-recommends \
+      vim \
+      file \
+      less \
+      curl \
+      lsof \
+      htop \
+      procps \
+      netcat-openbsd \
+      dnsutils \
+      iputils-ping \
+      strace \
+      avahi-utils
+
+
+# --- Env -----------------------------------------------------
+# Persistent mount for run config and settings (eg Thread network state).
+# This is meant to outlive the container: mount a host directory here at run time
+RUN mkdir /mt2mqtt-run
+RUN mkdir /mt2mqtt-bin
+RUN mkdir /src
+ENV PATH="/mt2mqtt-bin:${PATH}"
 
 
 # --- ot-br-posix source -----------------------------------------------------
@@ -102,14 +100,6 @@ RUN mkdir /src/ot-br-posix/build && cd /src/ot-br-posix/build && cmake -GNinja \
     /src/ot-br-posix/
 RUN cd /src/ot-br-posix/build && ninja
 
-# Make ot-br bins available through path
-RUN mkdir /mt2mqtt-bin
-RUN ln -s /src/ot-br-posix/build/third_party/openthread/repo/src/posix/ot-ctl /mt2mqtt-bin
-RUN ln -s /src/ot-br-posix/build/src/agent/otbr-agent /mt2mqtt-bin
-RUN echo "ot-ctl state" > /mt2mqtt-bin/mt2mqtt-otbr-net-state
-RUN chmod +x /mt2mqtt-bin/mt2mqtt-otbr-net-state
-ENV PATH="/mt2mqtt-bin:${PATH}"
-
 # --- D-Bus policy -----------------------------------------------------------
 # Built with OTBR_DBUS=ON, so otbr-agent tries to own io.openthread.BorderRouter.wpan0
 # on the system bus.
@@ -117,11 +107,14 @@ RUN install -D -m 644 \
       /src/ot-br-posix/build/src/agent/otbr-agent.conf \
       /etc/dbus-1/system.d/otbr-agent.conf
 
+# Make ot-br bins available through path
+RUN ln -s /src/ot-br-posix/build/third_party/openthread/repo/src/posix/ot-ctl /mt2mqtt-bin
+RUN ln -s /src/ot-br-posix/build/src/agent/otbr-agent /mt2mqtt-bin
+
 
 #
 # Install python-matter-server
 #
-
 # Clone a repo with certs we can use for provisioning
 RUN mkdir -p /src/connectedhomeip
 RUN git clone --depth 1 --filter=blob:none --sparse https://github.com/project-chip/connectedhomeip /src/connectedhomeip
@@ -133,12 +126,12 @@ RUN apt-get install -y --no-install-recommends \
       libglib2.0-0 \
       libnl-route-3-200
 
+# /data is a hardcoded path in matter-server
 RUN mkdir /data
 RUN ln -s /data /mt2mqtt-run/matter-server-data
 
 
 # --- s6-overlay: lightweight container init / process supervisor ------------
-RUN apt-get install -y --no-install-recommends xz-utils
 # Bump to pull a newer s6-overlay; see github.com/just-containers/s6-overlay/releases
 ARG S6_OVERLAY_VERSION=3.2.0.2
 RUN set -eux; \
@@ -152,9 +145,6 @@ RUN set -eux; \
 
 # s6 handles container services startup, like an init.d
 COPY s6-overlay/s6-rc.d /etc/s6-overlay/s6-rc.d
-
-RUN echo 'for s in /run/service/*; do printf "%-22s " "$(basename "$s")"; /command/s6-svstat "$s"; done' > /mt2mqtt-bin/mt2mqtt-services.sh
-RUN chmod +x /mt2mqtt-bin/mt2mqtt-services.sh
 
 # Abort the container if startup fails
 ENV S6_BEHAVIOUR_IF_STAGE2_FAILS=2
@@ -170,6 +160,11 @@ RUN ln -s /src/fw/host_driver/host /mt2mqtt-bin/spinel_bt_mux_driver
 
 ## TODO: proxy mqtt
 COPY mqtt_bridge /src/
+
+# Helper scripts (e.g. bt-host-check.sh) onto PATH via /mt2mqtt-bin. Copied late
+# so editing them doesn't bust the heavy build layers.
+COPY scripts/ /mt2mqtt-bin/
+RUN chmod +x /mt2mqtt-bin/*.sh
 
 
 # -- Cleanup

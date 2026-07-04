@@ -1,24 +1,13 @@
 #!/usr/bin/env bash
-# Longrun: bluetoothd (BLE stack). This is the container's OWN BlueZ, kept only
-# as a fallback for a host-net posture (a BT adapter directly in this netns).
-# The primary commissioning path no longer uses it: `make start` reaches the
-# HOST's bluetoothd over the bind-mounted host system D-Bus socket, so the
-# container stays isolated and this daemon never runs. In that isolated netns no
-# BT controller exists, so this service self-downs (below) and stays down.
-#
-# If no adapter is visible we log that BT is unavailable and take this service
-# down, so s6-supervise does not restart-loop it. This failure is non-critical by
-# design: a *longrun* that exits does NOT fail the s6-rc bring-up (unlike a
-# oneshot), so S6_BEHAVIOUR_IF_STAGE2_FAILS=2 will not tear the container down.
-# The "up" state is reported when this process spawns -- before the check below
-# runs -- so self-downing afterwards can't be mistaken for a bring-up failure.
-set -uo pipefail
+# bluetoothd (BLE stack). This is the container's OWN BlueZ, kept only
+# as a fallback. Commisioning may happen through this BT stack, or through the host's
+# BT stack by going through D-Bus.
 
 exec 2>&1                         # fold stderr into stdout so bluetoothd-log captures it
 
 # A BT controller shows up as /sys/class/bluetooth/hci* (netns-scoped). None -> no adapter.
 if ! compgen -G '/sys/class/bluetooth/hci*' >/dev/null; then
-    echo "[bluetoothd] BT disabled, no commissioning possible (no adapter found)"
+    echo "[bluetoothd] in-container BT disabled (no adapter found). Commisioning needs to happen through host BT."
     exec s6-svc -d /run/service/bluetoothd    # stay down; don't restart-loop
 fi
 
