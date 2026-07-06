@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# Detect a wedged Spinel RCP from inside the container and hand off to host-side
+# recovery. Does NOT touch /dev/ttyACM0 (that would fight otbr-agent for the
+# exclusive port) -- it pings the daemon's control socket via ot-ctl and reads
+# otbr-agent's log for the Spinel-init failure signature. On a confirmed wedge it
+# drops a marker file in the bind-mounted run dir; a host watcher (or you) power-
+# cycles the C6 USB and clears it. See NOTES Step 7.
+#
+# No dedicated s6 logger: output goes to the container stdout (visible in
+# `make logs`) so WEDGED lines are front-and-center.
+set -uo pipefail
+exec 2>&1                          # merge stderr into stdout -> container log
+
+MARKER=/mt2mqtt-run/rcp-wedged
+OTBR_LOG=/mt2mqtt-run/logs/otbr-agent/current
+POLL=10                            # seconds between checks
+FAILS_TO_FLAG=3                    # consecutive bad polls before declaring wedged
+GRACE=20                           # let otbr-agent come up before first judgement
+
+# Matched loosely (not the exact file:line) so an otbr-agent reword of
+# "Init() at spinel_driver.cpp:NN: Failure" doesn't silently break detection.
+WEDGE_RE='Platform.*Init.*Failure'
+
+sleep "$GRACE"
+fails=0
+while :; do
+    # Healthy = the daemon answers at all; even "detached" means the RCP is
+    # talking. Crash-looping -> no control socket -> ot-ctl fails fast. Hung
+    # mid-run -> ot-ctl blocks -> timeout fires. Either way non-zero = unhealthy.
+    if timeout 5 ot-ctl state >/dev/null 2>&1; then
+        fails=0
+        if [ -e "$MARKER" ]; then
+            echo "[rcp-watchdog] RCP responding again; clearing $MARKER"
+            rm -f "$MARKER"
+        fi
+    else
+        fails=$((fails + 1))
+        echo "[rcp-watchdog] otbr-agent not answering ($fails/$FAILS_TO_FLAG)"
+        if [ "$fails" -ge "$FAILS_TO_FLAG" ]; then
+            if tail -n 80 "$OTBR_LOG" 2>/dev/null | grep -Eq "$WEDGE_RE"; then
+                echo "[rcp-watchdog] RCP WEDGED (Spinel Init failing) -- host must power-cycle the C6 USB"
+                date -Is > "$MARKER"
+            else
+                echo "[rcp-watchdog] otbr-agent unhealthy but no Spinel signature; not flagging the drive"
+            fi
+            fails=0                # don't respam every poll; re-judge next cycle
+        fi
+    fi
+    sleep "$POLL"
+done

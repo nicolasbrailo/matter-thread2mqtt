@@ -54,11 +54,11 @@ start-bare:
 	docker run -it --rm --name $(NAME) \
 		--security-opt apparmor=unconfined \
 		--entrypoint /bin/bash \
-		-v /run/dbus/system_bus_socket:/run/host_dbus/system_bus_socket \
 		-v '$(RUNDIR)':/mt2mqtt-run \
 		--device $(RCP):/dev/ttyACM0 \
 		--device /dev/net/tun --cap-add NET_ADMIN \
 		mt2mqtt:dev
+
 
 # Filtered D-Bus proxy exposing ONLY org.bluez to the container, so commissioning
 # can drive the host's bluetoothd without handing the container the whole host
@@ -75,7 +75,7 @@ start-bare:
 bluez-proxy:
 	mkdir -p '$(RUNDIR)'
 	rm -f '$(RUNDIR)/bluez-proxy.sock'
-	xdg-dbus-proxy \
+	sudo xdg-dbus-proxy \
 		unix:path=/run/dbus/system_bus_socket \
 		'$(RUNDIR)/bluez-proxy.sock' \
 		--filter --talk=org.bluez
