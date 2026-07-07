@@ -7,5 +7,7 @@
 #   s10000000 rotate at ~10 MB
 set -euo pipefail
 
-mkdir -p /mt2mqtt-run/logs                          # s6-log makes only the leaf, not the parent
-exec s6-log -b n5 s10000000 /mt2mqtt-run/logs/otbr-agent
+LOGDIR=/mt2mqtt-run/logs/otbr-agent
+mkdir -p "$LOGDIR"                     # make the dir ourselves so the symlink has a home
+ln -sf current "$LOGDIR/otbr-agent.log"  # stable .log handle to the live log; survives rotation
+exec s6-log -b n5 s10000000 "$LOGDIR"

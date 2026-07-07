@@ -13,6 +13,7 @@ CONTAINER = $(shell docker ps --format '{{.Names}}' | grep -E '^$(NAME)$$' | hea
 RUNDIR := $(CURDIR)/mt2mqtt-run
 
 rebuild:
+	sudo chown -R batman:batman $(RUNDIR)
 	docker build -t mt2mqtt:dev -f ./Dockerfile .
 
 # Pick the dongle by its stable by-id name, but resolve it to the real
@@ -87,6 +88,9 @@ stop:
 shell:
 	docker exec -it $(CONTAINER) bash
 
-# Follow the entrypoint's output — the only way to see it in detached mode.
+# Tail every service log under $(RUNDIR)/logs. The s6 loggers each expose a stable
+# <svc>.log symlink to their live file, and the oneshots write <name>.log directly;
+# tail -F re-opens across s6-log rotation. These are host-side files (RUNDIR is
+# bind-mounted), so this works even when the container is stopped.
 logs:
-	docker logs -f $(CONTAINER)
+	find '$(RUNDIR)/logs' -name '*.log' -print0 2>/dev/null | xargs -0 -r tail -n 100 -F
