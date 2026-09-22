@@ -1,4 +1,4 @@
-.PHONY: rebuild start start-bare bluez-proxy stop shell logs
+.PHONY: rebuild start start-bare bluez-proxy mqtt-proxy stop shell logs
 
 NAME := mt2mqtt
 
@@ -35,6 +35,7 @@ RCP      := $(shell readlink -f '$(RCP_BYID)')
 start:
 	mkdir -p '$(RUNDIR)/logs'
 	docker run -d --name $(NAME) \
+		--network none \
 		-v '$(RUNDIR)':/mt2mqtt-run \
 		--device $(RCP):/dev/ttyACM0 \
 		--device /dev/net/tun --cap-add NET_ADMIN \
@@ -80,6 +81,28 @@ bluez-proxy:
 		unix:path=/run/dbus/system_bus_socket \
 		'$(RUNDIR)/bluez-proxy.sock' \
 		--filter --talk=org.bluez
+
+BROKER      ?= 10.0.0.10
+BROKER_PORT ?= 4500
+
+# Host-side MQTT relay -- the single sanctioned LAN crossing. The container runs
+# --network none, so its only path to the LAN broker is a unix socket bridged by
+# a host process. socat listens on a unix socket in RUNDIR (rides the existing
+# /mt2mqtt-run mount, so it's /mt2mqtt-run/mqtt.sock inside the container) and
+# forwards each connection to the broker. The container's bridge connects with
+# paho transport="unix" -- no container-side relay needed.
+#
+# No sudo (unlike bluez-proxy): MQTT relaying is plain byte-forwarding, no D-Bus
+# EXTERNAL/SO_PEERCRED auth, and the socket lives in the user-owned RUNDIR. Runs
+# in the FOREGROUND; leave it in its own terminal. It only ever talks to
+# $(BROKER):$(BROKER_PORT) -- override with `make mqtt-proxy BROKER=... BROKER_PORT=...`.
+# Needs socat on the host: `sudo apt install socat`.
+mqtt-proxy:
+	mkdir -p '$(RUNDIR)'
+	rm -f '$(RUNDIR)/mqtt.sock'
+	socat -d -d \
+		UNIX-LISTEN:'$(RUNDIR)/mqtt.sock',fork,reuseaddr \
+		TCP:$(BROKER):$(BROKER_PORT)
 
 stop:
 	docker rm -f $(NAME)
