@@ -1,34 +1,84 @@
 #!/usr/bin/env bash
-# Detect a wedged Spinel RCP from inside the container and hand off to host-side
-# recovery. Does NOT touch /dev/ttyACM0 (that would fight otbr-agent for the
-# exclusive port) -- it pings the daemon's control socket via ot-ctl and reads
-# otbr-agent's log for the Spinel-init failure signature. On a confirmed wedge it
-# drops a marker file in the bind-mounted run dir; a host watcher (or you) power-
-# cycles the C6 USB and clears it. See NOTES Step 7.
+# Detect a wedged Spinel RCP from inside the container and recover it in place.
 #
-# No dedicated s6 logger: output goes to the container stdout (visible in
-# `make logs`) so WEDGED lines are front-and-center.
+# Detection does NOT touch /dev/ttyACM0 while otbr-agent is up (that would fight
+# it for the exclusive port) -- it pings the daemon's control socket via ot-ctl
+# and reads otbr-agent's log for the Spinel-init failure signature. See NOTES
+# Step 7.
+#
+# Recovery is a hard reset of the C6 over the USB-Serial-JTAG line-control
+# signals (scripts/esp_reset.py): stop otbr-agent so the port is free, pulse EN,
+# start otbr-agent again, redo the mesh bring-up that otbr-agent-net does at
+# boot. No USB re-enumeration, so the container's --device node stays valid, and
+# no host privileges are needed.
+#
+# Retries forever, pausing longer between attempts once the first few fail: a
+# 24/7 bridge should keep trying rather than give up and stay dark. The marker
+# file stays as a breadcrumb for host-side escalation -- a firmware reset can't
+# fix a genuinely dead USB link, which still needs a replug or uhubctl. It
+# appears on a confirmed wedge and is cleared as soon as the RCP answers.
 set -uo pipefail
-exec 2>&1                          # merge stderr into stdout -> container log
+exec 2>&1                          # merge stderr into stdout -> rcp-watchdog-log
 
 MARKER=/mt2mqtt-run/rcp-wedged
 OTBR_LOG=/mt2mqtt-run/logs/otbr-agent/current
-POLL=10                            # seconds between checks
+OTBR_SVC=/run/service/otbr-agent
+RCP_PORT=/dev/ttyACM0              # as mapped by `docker run --device`
+POLL=10                            # seconds between health checks
 FAILS_TO_FLAG=3                    # consecutive bad polls before declaring wedged
 GRACE=20                           # let otbr-agent come up before first judgement
+ATTACH_TRIES=6                     # after a reset: ot-net-up.sh polls this many times...
+ATTACH_WAIT=5                      # ...this far apart, waiting for the mesh
+BACKOFF_AFTER=3                    # failed recoveries before slowing down
+BACKOFF=300                        # ...then wait this long between attempts
 
 # Matched loosely (not the exact file:line) so an otbr-agent reword of
 # "Init() at spinel_driver.cpp:NN: Failure" doesn't silently break detection.
 WEDGE_RE='Platform.*Init.*Failure'
 
+# Healthy = the daemon answers at all; even "detached" means the RCP is talking.
+# Crash-looping -> no control socket -> ot-ctl fails fast. Hung mid-run -> ot-ctl
+# blocks -> timeout fires. Either way non-zero = unhealthy.
+rcp_answers() {
+    timeout 5 ot-ctl state >/dev/null 2>&1
+}
+
+# Reset the C6 and put the Thread stack back together. 0 if the RCP answers after.
+recover() {
+    echo "[rcp-watchdog] recovery attempt $1: resetting the C6 on $RCP_PORT"
+
+    # otbr-agent holds the port exclusively, so it must be down before we open
+    # it. -d stops just this longrun and leaves s6-rc's dependency graph alone,
+    # so matter-server isn't dragged down with it.
+    s6-svc -d "$OTBR_SVC"
+    sleep 2                        # let the supervised process die and close the fd
+
+    esp_reset.py -p "$RCP_PORT" ||
+        echo "[rcp-watchdog] esp_reset reported failure; starting otbr-agent anyway to re-test"
+
+    s6-svc -u "$OTBR_SVC"
+
+    # otbr-agent-net is a oneshot that only runs at boot, so redo its work with
+    # the same script it uses -- less patient, since we're in a retry loop and
+    # will come back around anyway.
+    sleep 5                        # let otbr-agent re-open the port first
+    ATTEMPTS=$ATTACH_TRIES INTERVAL=$ATTACH_WAIT ot-net-up.sh
+
+    if rcp_answers; then
+        echo "[rcp-watchdog] recovered; state=$(timeout 5 ot-ctl state | head -1)"
+        return 0
+    fi
+    echo "[rcp-watchdog] still wedged after reset"
+    return 1
+}
+
 sleep "$GRACE"
-fails=0
+fails=0       # consecutive unhealthy polls
+recoveries=0  # consecutive failed recovery attempts
 while :; do
-    # Healthy = the daemon answers at all; even "detached" means the RCP is
-    # talking. Crash-looping -> no control socket -> ot-ctl fails fast. Hung
-    # mid-run -> ot-ctl blocks -> timeout fires. Either way non-zero = unhealthy.
-    if timeout 5 ot-ctl state >/dev/null 2>&1; then
+    if rcp_answers; then
         fails=0
+        recoveries=0
         if [ -e "$MARKER" ]; then
             echo "[rcp-watchdog] RCP responding again; clearing $MARKER"
             rm -f "$MARKER"
@@ -37,13 +87,25 @@ while :; do
         fails=$((fails + 1))
         echo "[rcp-watchdog] otbr-agent not answering ($fails/$FAILS_TO_FLAG)"
         if [ "$fails" -ge "$FAILS_TO_FLAG" ]; then
+            fails=0                # don't re-judge every poll mid-recovery
             if tail -n 80 "$OTBR_LOG" 2>/dev/null | grep -Eq "$WEDGE_RE"; then
-                echo "[rcp-watchdog] RCP WEDGED (Spinel Init failing) -- host must power-cycle the C6 USB"
+                echo "[rcp-watchdog] RCP WEDGED (Spinel Init failing)"
                 date -Is > "$MARKER"
+                recoveries=$((recoveries + 1))
+                if recover "$recoveries"; then
+                    rm -f "$MARKER"
+                    recoveries=0
+                elif [ "$recoveries" -ge "$BACKOFF_AFTER" ]; then
+                    # The reset isn't landing -- most likely the USB link itself
+                    # is gone, which only the host can fix. Keep trying, but stop
+                    # hammering the port.
+                    echo "[rcp-watchdog] $recoveries resets failed; host may need to replug/power-cycle the C6"
+                    echo "[rcp-watchdog] backing off ${BACKOFF}s, will keep retrying"
+                    sleep "$BACKOFF"
+                fi
             else
-                echo "[rcp-watchdog] otbr-agent unhealthy but no Spinel signature; not flagging the drive"
+                echo "[rcp-watchdog] otbr-agent unhealthy but no Spinel signature; not resetting the C6"
             fi
-            fails=0                # don't respam every poll; re-judge next cycle
         fi
     fi
     sleep "$POLL"

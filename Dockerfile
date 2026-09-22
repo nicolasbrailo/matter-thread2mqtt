@@ -70,6 +70,11 @@ RUN mkdir /mt2mqtt-bin
 RUN mkdir /src
 ENV PATH="/mt2mqtt-bin:${PATH}"
 
+# MQTT client for the matter->mqtt bridge
+RUN pip install --no-cache-dir paho-mqtt
+
+# Serial line control for scripts/esp_reset.py
+RUN pip install --no-cache-dir pyserial
 
 # --- ot-br-posix source -----------------------------------------------------
 # Cloned from upstream, pinned to the exact commit verified locally. The order
@@ -122,6 +127,7 @@ RUN git -C /src/connectedhomeip sparse-checkout set credentials/production/paa-r
 
 # Make the matter-server module available in system python
 RUN pip install --no-cache-dir "python-matter-server[server]"
+
 RUN apt-get install -y --no-install-recommends \
       libglib2.0-0 \
       libnl-route-3-200
@@ -164,7 +170,7 @@ COPY mqtt_bridge /src/
 # Helper scripts (e.g. bt-host-check.sh) onto PATH via /mt2mqtt-bin. Copied late
 # so editing them doesn't bust the heavy build layers.
 COPY scripts/ /mt2mqtt-bin/
-RUN chmod +x /mt2mqtt-bin/*.sh
+RUN chmod +x /mt2mqtt-bin/*.sh /mt2mqtt-bin/*.py
 
 
 # -- Cleanup
