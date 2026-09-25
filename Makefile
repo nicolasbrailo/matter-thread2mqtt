@@ -1,4 +1,4 @@
-.PHONY: rebuild start start-bare bluez-proxy mqtt-proxy stop shell logs
+.PHONY: rebuild start start-bare bluez-proxy mqtt-proxy bridge stop shell logs
 
 NAME := mt2mqtt
 
@@ -83,7 +83,8 @@ bluez-proxy:
 		--filter --talk=org.bluez
 
 BROKER      ?= 10.0.0.10
-BROKER_PORT ?= 4500
+#BROKER_PORT ?= 4500
+BROKER_PORT ?= 1883
 
 # Host-side MQTT relay -- the single sanctioned LAN crossing. The container runs
 # --network none, so its only path to the LAN broker is a unix socket bridged by
@@ -103,6 +104,20 @@ mqtt-proxy:
 	socat -d -d \
 		UNIX-LISTEN:'$(RUNDIR)/mqtt.sock',fork,reuseaddr \
 		TCP:$(BROKER):$(BROKER_PORT)
+
+# Matter->MQTT bridge, run by hand while it's still moving (no s6 service yet). The image
+# ships a copy under /src, but editing that means a rebuild, so this syncs the source into
+# RUNDIR instead: it's bind-mounted at /mt2mqtt-run, so the container sees the edit
+# immediately. Runs in the FOREGROUND with the console attached -- the bridge logs to stdout
+# ([bridge]/[matter] lines) and Ctrl-C stops it.
+#
+# Needs `make mqtt-proxy` in another terminal (the bridge's only path to the broker) and
+# matter-server up inside the container; without the latter it retries every 5s and says so.
+run-bridge:
+	mkdir -p '$(RUNDIR)/bridge2/fixtures'
+	cp $(CURDIR)/mqtt_bridge/*.py '$(RUNDIR)/bridge2/'
+	cp $(CURDIR)/mqtt_bridge/fixtures/*.json '$(RUNDIR)/bridge2/fixtures/'
+	docker exec -it $(CONTAINER) python3 /mt2mqtt-run/bridge2/bridge.py
 
 stop:
 	docker rm -f $(NAME)
