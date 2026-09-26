@@ -1,2 +1,3 @@
 mt2mqtt-run
 mt2mqtt-log
+*__pycache__*
