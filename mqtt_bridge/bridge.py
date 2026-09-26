@@ -2,6 +2,8 @@
 """Matter -> MQTT bridge, zigbee2mqtt style.
 
   mt2m/ping                 {}                   -> mt2m {"pong":{}}
+  mt2m/provision            {"code":"12345678901"} or {"code":"MT:..."} -- commission a new
+                            device over BLE+Thread; progress on mt2m/bridge/event
   mt2m/discover             {}                   -> mt2m/bridge/devices (retained) + every device's state
   mt2m/bridge/request/<subject>                  -> mt2m/bridge/response/<subject>, z2m style:
                             {"status":"ok","data":{...}} or {"status":"error","error":"..."},
@@ -12,7 +14,9 @@
                             options: transition (s), with_on_off (false = don't switch on
                             when setting brightness)
   mt2m/<device>/get         {"state":""}  ({} reads everything) -> mt2m/<device>
-  mt2m/<device>                                  <- state, published on every change
+  mt2m/<device>                                  <- state, published on every change, and
+                            {"action":"double"} on a button press (an event: never retained,
+                            never merged into the state message)
   mt2m/<device>/availability                     <- {"state":"online"|"offline"} (retained)
   mt2m/bridge/state                              <- the bridge itself, offline via the mqtt will
 
@@ -24,12 +28,13 @@ the matter loop, so on_message only parses the topic and hands requests over.
 """
 import asyncio
 import json
+import time
 
 import paho.mqtt.client as mqtt
 from matter_server.common.models import EventType
 
 from devices import Device, as_number, dump_node, SETTABLE, GETTABLE
-from matter import Matter
+from matter import PAA_ROOT_CERT_DIR, Matter, paa_cert_problem, thread_dataset
 
 SOCKET = "/mt2mqtt-run/mqtt.sock"
 TOPIC = "mt2m"
@@ -50,6 +55,7 @@ class Bridge:
         self.devices = {}      # node_id -> Device
         self._attr_unsubs = {}  # node_id -> unsubscribe fn for its attribute updates
         self._pending_state = set()
+        self._provisioning = False
         self.matter = Matter(on_connect=self.on_matter_connect,
                              on_disconnect=self.on_matter_disconnect)
 
@@ -66,6 +72,8 @@ class Bridge:
         self._attr_unsubs = {}  # old client's subscriptions died with it
         for ev in (EventType.NODE_ADDED, EventType.NODE_UPDATED, EventType.NODE_REMOVED):
             client.subscribe_events(lambda *_: self.rebuild(), event_filter=ev)
+        # Node events carry their own node_id, so unlike attribute updates one subscription does
+        client.subscribe_events(self.on_node_event, event_filter=EventType.NODE_EVENT)
         self.rebuild()
 
     def rebuild(self):
@@ -92,6 +100,19 @@ class Bridge:
         """matter-server is gone, so we no longer know anything about any device."""
         for dev in self.devices.values():
             self.publish_availability(dev, online=False)
+
+    def on_node_event(self, event, data):
+        """Buttons: Matter reports presses as Switch cluster events, not attribute updates."""
+        dev = self.devices.get(data.node_id)
+        if dev is None:
+            return
+        hit = dev.action(data.endpoint_id, data.cluster_id, data.event_id, data.data)
+        if hit is None:
+            return
+        prop, action = hit
+        log(f"{dev.friendly_name}: {prop}={action}")
+        # Its own message, not retained: a retained press would replay to every new subscriber
+        self.publish(f"{TOPIC}/{dev.friendly_name}", {prop: action})
 
     def schedule_state(self, node_id):
         if node_id not in self._pending_state:
@@ -122,6 +143,76 @@ class Bridge:
                 if key(dev) == name:
                     return dev
         return None
+
+    def event(self, type_, **data):
+        """z2m-style bridge/event: progress a client can follow without reading the logs."""
+        self.publish(f"{TOPIC}/bridge/event", {"type": type_, "data": data})
+
+    async def provision(self, payload):
+        """Commission a new device, the way commisioning_test.py does it by hand: hand
+        matter-server the live Thread dataset, then pair over BLE with the setup code."""
+        request = "provision"
+        code = payload.get("code")
+        if isinstance(code, int):  # {"code": 12345678901} -- fine, but see the digit check below
+            code = str(code)
+        if not isinstance(code, str) or not code.strip():
+            return self.error(request, 'expected {"code": "<pairing code>"}')
+        code = code.strip().replace("-", "").replace(" ", "")
+        if self.matter.client is None:
+            return self.error(request, "matter-server not connected")
+        if self._provisioning:
+            return self.error(request, "a provision is already running")
+
+        started = time.monotonic()
+
+        def step(name, msg, **data):
+            log(f"provision +{time.monotonic() - started:5.1f}s [{name}] {msg}")
+            self.event("provision", step=name, message=msg, code=code, **data)
+
+        self._provisioning = True
+        try:
+            step("start", f"pairing code {code!r}")
+            if code.isdigit() and len(code) != 11:
+                # A manual code is 11 digits; as a json number a leading zero is already gone
+                log(f"provision WARNING: {len(code)} digits, expected 11 -- if the code starts "
+                    f"with 0, send it as a string: {{\"code\": \"0{code}\"}}")
+            info = self.matter.client.server_info
+            if info is not None and not info.bluetooth_enabled:
+                log("provision WARNING: matter-server reports BLE disabled -- start "
+                    "`make bluez-proxy` on the host and restart the container's matter-server, "
+                    "or this will only find devices already on the network")
+
+            # Cheap, and it fails ~40s earlier than the attestation step would
+            step("check_certs", f"checking the PAA trust store in {PAA_ROOT_CERT_DIR}")
+            problem = paa_cert_problem()
+            if problem:
+                raise RuntimeError(problem)
+
+            step("thread_dataset", "reading the active Thread dataset from otbr-agent (ot-ctl)")
+            dataset = await thread_dataset()
+            step("thread_dataset", f"got {len(dataset) // 2} bytes: {dataset[:16]}...{dataset[-8:]}")
+            await self.matter.client.set_thread_operational_dataset(dataset)
+            step("thread_dataset", "pushed to matter-server")
+
+            step("commissioning", "waiting for the device to advertise over BLE -- put it in "
+                                  "pairing mode now; this can take a couple of minutes")
+            node_data = await self.matter.client.commission_with_code(code, network_only=False)
+            step("commissioned", f"node_id={node_data.node_id} available={node_data.available}",
+                 node_id=node_data.node_id)
+
+            # The node arrives through NODE_ADDED too, but rebuild now so the reply and
+            # mt2m/bridge/devices are already correct when this returns
+            self.rebuild()
+            dev = self.devices.get(node_data.node_id)
+            name = dev.friendly_name if dev else f"matter_{node_data.node_id}"
+            step("done", f"{name} is commissioned; set it with mt2m/{name}/set",
+                 node_id=node_data.node_id, friendly_name=name)
+        except Exception as e:
+            log(f"provision FAILED after {time.monotonic() - started:.1f}s: {e!r}")
+            self.event("provision", step="failed", message=repr(e), code=code)
+            self.error(request, repr(e))
+        finally:
+            self._provisioning = False
 
     async def discover(self):
         if self.matter.client is None:
@@ -280,7 +371,7 @@ def on_message(client, userdata, msg):
     rest = msg.topic.split("/")[1:]
     is_request = len(rest) >= 3 and rest[:2] == ["bridge", "request"]
     is_device = len(rest) >= 2 and rest[-1] in ("set", "get")
-    if not (is_request or is_device or rest in (["ping"], ["discover"])):
+    if not (is_request or is_device or rest in (["ping"], ["discover"], ["provision"])):
         return  # our own state/devices/response publications
     print(f"rx {msg.topic} {msg.payload!r}", flush=True)
     raw = msg.payload.decode(errors="replace").strip()
@@ -293,6 +384,8 @@ def on_message(client, userdata, msg):
         client.publish(TOPIC, json.dumps({"pong": {}}))
     elif rest == ["discover"]:
         bridge.matter.submit(bridge.discover())
+    elif rest == ["provision"]:
+        bridge.matter.submit(bridge.provision(payload))
     elif is_request:
         bridge.matter.submit(bridge.request("/".join(rest[2:]), payload))
     else:

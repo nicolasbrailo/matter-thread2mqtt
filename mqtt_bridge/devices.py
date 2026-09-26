@@ -41,6 +41,7 @@ WIFI_DIAG = Clusters.WiFiNetworkDiagnostics.id
 ETHERNET_DIAG = Clusters.EthernetNetworkDiagnostics.id
 OTA_REQUESTOR = Clusters.OtaSoftwareUpdateRequestor.id
 POWER_SOURCE = Clusters.PowerSource.id
+SWITCH = Clusters.Switch.id
 
 DEVICE_TYPE_LIST = Clusters.Descriptor.Attributes.DeviceTypeList.attribute_id
 NODE_LABEL = Clusters.BasicInformation.Attributes.NodeLabel.attribute_id
@@ -60,6 +61,12 @@ CURRENT_Y = Clusters.ColorControl.Attributes.CurrentY.attribute_id
 COLOR_MODE = Clusters.ColorControl.Attributes.ColorMode.attribute_id
 
 COLOR_CAP = Clusters.ColorControl.Bitmaps.ColorCapabilitiesBitmap
+NUMBER_OF_POSITIONS = Clusters.Switch.Attributes.NumberOfPositions.attribute_id
+MULTI_PRESS_MAX = Clusters.Switch.Attributes.MultiPressMax.attribute_id
+FEATURE_MAP = Clusters.Switch.Attributes.FeatureMap.attribute_id
+SWITCH_EVENTS = Clusters.Switch.Events
+SWITCH_FEATURE = Clusters.Switch.Bitmaps.Feature
+
 BAT_OK = Clusters.PowerSource.Enums.BatChargeLevelEnum.kOk
 COLOR_MODE_ENUM = Clusters.ColorControl.Enums.ColorModeEnum
 # z2m names for Matter's ColorMode
@@ -107,8 +114,16 @@ PUBLISHED = 1
 SETTABLE = 2
 GETTABLE = 4
 
+# z2m's names for a press count
+PRESS_NAMES = {1: "single", 2: "double", 3: "triple", 4: "quadruple", 5: "quintuple"}
+
+
+def press_name(n):
+    return PRESS_NAMES.get(n, f"{n}x")
+
+
 # A device's state goes to mt2m/<friendly_name>, so it can't be named like a bridge topic
-RESERVED_NAMES = {"bridge", "ping", "discover"}
+RESERVED_NAMES = {"bridge", "ping", "discover", "provision"}
 
 
 def cluster_name(cid):
@@ -231,6 +246,7 @@ class Cap:
     name = None
     access = PUBLISHED | GETTABLE
     attrs = ()  # (cluster, attribute) ids backing the value; re-read from the device on /get
+    momentary = False  # true for a property that is an event, so it has no steady value
 
     def __init__(self, ep, cl):
         self.ep = ep
@@ -466,6 +482,66 @@ class ColorModeEnumCap(Cap):
         return None if v is None else COLOR_MODES.get(int(v))
 
 
+class ActionCap(Cap):
+    """z2m's `action`: a button press. Published only -- it's an event, not state, so there is
+    nothing to read back and nothing to set. Matter reports these as Switch cluster events,
+    which arrive as EventType.NODE_EVENT rather than as attribute updates.
+    """
+    name = "action"
+    access = PUBLISHED
+    momentary = True
+
+    def __init__(self, ep, cl):
+        super().__init__(ep, cl)
+        sw = cl[SWITCH]
+        feat = sw.get(FEATURE_MAP) or 0
+        self.latching = bool(feat & SWITCH_FEATURE.kLatchingSwitch)
+        self.multi = bool(feat & SWITCH_FEATURE.kMomentarySwitchMultiPress)
+        self.long = bool(feat & SWITCH_FEATURE.kMomentarySwitchLongPress)
+        self.release = bool(feat & SWITCH_FEATURE.kMomentarySwitchRelease)
+        self.positions = sw.get(NUMBER_OF_POSITIONS) or 2
+        self.max_presses = sw.get(MULTI_PRESS_MAX) or 2
+
+    def expose(self):
+        if self.latching:
+            values = [f"position_{n}" for n in range(self.positions)]
+        else:
+            values = ["single"]
+            if self.multi:
+                values += [press_name(n) for n in range(2, self.max_presses + 1)]
+            if self.long:
+                values += ["hold", "release"]
+        return [{**self.base("enum"), "values": values}]
+
+    def read(self, node):
+        return None  # momentary: never part of the state message
+
+    def event(self, event_id, data):
+        """Switch event -> z2m action name, or None for the events we don't publish."""
+        data = data or {}
+        if event_id == SWITCH_EVENTS.SwitchLatched.event_id:
+            pos = struct_field(data, 0, "newPosition")
+            return None if pos is None else f"position_{pos}"
+        if self.long and event_id == SWITCH_EVENTS.LongPress.event_id:
+            return "hold"
+        if self.long and event_id == SWITCH_EVENTS.LongRelease.event_id:
+            return "release"
+        if self.multi:
+            # A multi-press device also sends InitialPress/ShortRelease around every press;
+            # only MultiPressComplete knows how many presses it turned out to be, so the
+            # others are dropped to avoid counting one press twice.
+            if event_id == SWITCH_EVENTS.MultiPressComplete.event_id:
+                return press_name(struct_field(data, 1, "totalNumberOfPressesCounted") or 1)
+            return None
+        # No multi-press support: the press ends at ShortRelease, or at InitialPress on a
+        # device that doesn't report releases either.
+        if self.release and event_id == SWITCH_EVENTS.ShortRelease.event_id:
+            return "single"
+        if not self.release and event_id == SWITCH_EVENTS.InitialPress.event_id:
+            return "single"
+        return None
+
+
 class SensorCap(Cap):
     """Read-only value from one attribute of a sensor cluster."""
 
@@ -531,7 +607,10 @@ def endpoint_caps(ep, cl, device_types):
                 act.append(ColorCap(ep, cl))
             act.append(ColorModeEnumCap(ep, cl))
     is_light = LEVEL in cl or COLOR in cl or LIGHT_TYPES & set(device_types)
-    return ("light" if is_light else "switch"), act, sensor_caps(ep, cl)
+    sens = sensor_caps(ep, cl)
+    if SWITCH in cl:
+        sens.append(ActionCap(ep, cl))
+    return ("light" if is_light else "switch"), act, sens
 
 
 # --- Device -------------------------------------------------------------------
@@ -616,5 +695,16 @@ class Device:
         self.info["endpoints"] = endpoints
 
     def state(self):
-        """Current z2m state, from matter-server's (live-updated) attribute cache."""
-        return {prop: cap.read(self.node) for prop, cap in self.props.items()}
+        """Current z2m state, from matter-server's (live-updated) attribute cache. Momentary
+        properties (button actions) are events, so they're published separately, not here."""
+        return {prop: cap.read(self.node) for prop, cap in self.props.items() if not cap.momentary}
+
+    def action(self, endpoint_id, cluster_id, event_id, data):
+        """(property, action) for a Switch event on this node, or None if we don't publish it."""
+        if cluster_id != SWITCH:
+            return None
+        for prop, cap in self.props.items():
+            if isinstance(cap, ActionCap) and cap.ep == endpoint_id:
+                action = cap.event(event_id, data)
+                return None if action is None else (prop, action)
+        return None
