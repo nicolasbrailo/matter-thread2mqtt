@@ -125,6 +125,12 @@ RUN mkdir -p /src/connectedhomeip
 RUN git clone --depth 1 --filter=blob:none --sparse https://github.com/project-chip/connectedhomeip /src/connectedhomeip
 RUN git -C /src/connectedhomeip sparse-checkout set credentials/production/paa-root-certs
 
+# matter-server treats --paa-root-cert-dir as its own cache: with no .version marker it deletes
+# every cert in there ("old store"), then refills from the DCL -- which our --network none
+# container can't reach, leaving an empty trust store and every commissioning failing device
+# attestation. The marker makes it leave the checked-out certs alone.
+RUN echo 1 > /src/connectedhomeip/credentials/production/paa-root-certs/.version
+
 # Make the matter-server module available in system python
 RUN pip install --no-cache-dir "python-matter-server[server]"
 

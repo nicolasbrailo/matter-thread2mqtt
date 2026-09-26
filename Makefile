@@ -1,4 +1,4 @@
-.PHONY: rebuild start start-bare bluez-proxy mqtt-proxy bridge stop shell logs
+.PHONY: rebuild start start-bare bluez-proxy mqtt-proxy run-bridge stop shell logs
 
 NAME := mt2mqtt
 
